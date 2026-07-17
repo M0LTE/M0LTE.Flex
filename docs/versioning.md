@@ -43,6 +43,17 @@ history stays readable. `1.0.0` will be cut when the surface is declared stable.
 
 ## Releasing
 
-Releases are cut by tagging `v<MAJOR>.<MINOR>.<PATCH>` on green `main`. CI builds, runs the
-full suite (including the API lock) and packs the `.nupkg`; publishing that package to
-NuGet is the release.
+Releases are cut by tagging `v<MAJOR>.<MINOR>.<PATCH>` on green `main`. The
+[`publish`](../.github/workflows/publish.yml) workflow fires on that tag: it checks the tag
+matches `<Version>`, gates on a green build + the full test suite (including the API lock),
+packs, pushes the `.nupkg` + `.snupkg` to nuget.org, and opens a GitHub release. Nothing
+publishes on an ordinary push.
+
+```sh
+# after bumping <Version> and moving PublicApi.approved.txt in the same commit:
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Publishing requires a `NUGET_API_KEY` repository secret (a nuget.org API key scoped to push
+`M0LTE.Flex`). Set it once under **Settings ▸ Secrets and variables ▸ Actions**, or with
+`gh secret set NUGET_API_KEY`.
