@@ -4,22 +4,27 @@ name: publish
 # public-API lock), then pack and push to nuget.org and open a GitHub release. Nothing
 # publishes on an ordinary push — only when a v<MAJOR>.<MINOR>.<PATCH> tag is pushed, and
 # only if that tag matches <Version> in Directory.Build.props (see docs/versioning.md).
+#
+# Publishing uses nuget.org Trusted Publishing (OIDC): no long-lived API key is stored.
+# The NuGet/login action exchanges a short-lived GitHub OIDC token for a temporary API key,
+# matched against the trusted-publishing policy configured on nuget.org for this repo's
+# `publish.yml`. The nuget.org account username is read from the `NUGET_USER` repo variable.
 on:
   push:
     tags:
       - 'v*.*.*'
 
-permissions:
-  contents: write   # create the GitHub release
-
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # mint the OIDC token for Trusted Publishing
+      contents: write   # create the GitHub release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up .NET (from global.json)
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
@@ -46,17 +51,21 @@ jobs:
       - name: Pack
         run: dotnet pack src/M0LTE.Flex/M0LTE.Flex.csproj -c Release --no-build -o artifacts
 
+      # Get a short-lived nuget.org API key via Trusted Publishing, immediately before push
+      # (the key is valid for ~1 hour). NUGET_USER is a repo variable = the nuget.org profile
+      # name (Settings ▸ Secrets and variables ▸ Actions ▸ Variables), not an email address.
+      - name: NuGet login (OIDC → temporary API key)
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+
       - name: Push to nuget.org
-        env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "${NUGET_API_KEY:-}" ]; then
-            echo "::error::NUGET_API_KEY secret is not set — add it in the repo settings (Settings ▸ Secrets and variables ▸ Actions) or with 'gh secret set NUGET_API_KEY'."
-            exit 1
-          fi
-          dotnet nuget push "artifacts/*.nupkg"  --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
-          dotnet nuget push "artifacts/*.snupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          key='${{ steps.nuget-login.outputs.NUGET_API_KEY }}'
+          dotnet nuget push "artifacts/*.nupkg"  --api-key "$key" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          dotnet nuget push "artifacts/*.snupkg" --api-key "$key" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: Create GitHub release
         env:
