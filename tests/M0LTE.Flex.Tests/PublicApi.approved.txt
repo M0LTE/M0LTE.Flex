@@ -17,7 +17,7 @@ namespace M0LTE.Flex
         public void WriteSamples(System.ReadOnlySpan<float> samples, System.Span<byte> destination) { }
         public static M0LTE.Flex.DaxStreamFormat ForDspRate(int dspRate) { }
     }
-    public sealed class FlexAudioInput : M0LTE.Flex.IAudioInput, System.IDisposable
+    public sealed class FlexAudioInput : M0LTE.Radio.Audio.IAudioInput, System.IDisposable
     {
         public FlexAudioInput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, int packetBuffer = 3) { }
         public long PacketsLost { get; }
@@ -27,7 +27,7 @@ namespace M0LTE.Flex
         public void Flush() { }
         public int Read(System.Span<float> destination) { }
     }
-    public sealed class FlexAudioOutput : M0LTE.Flex.IAudioOutput
+    public sealed class FlexAudioOutput : M0LTE.Radio.Audio.IAudioOutput
     {
         public FlexAudioOutput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, bool paceRealTime = true) { }
         public long PacketsSent { get; }
@@ -69,7 +69,7 @@ namespace M0LTE.Flex
         public FlexProtocolException(string message) { }
         public FlexProtocolException(string message, System.Exception inner) { }
     }
-    public sealed class FlexPtt : M0LTE.Flex.IPttControl
+    public sealed class FlexPtt : M0LTE.Radio.Audio.IPttControl
     {
         public FlexPtt(M0LTE.Flex.FlexClient client, string sliceIndex, bool confirmInterlock = false, int confirmTimeoutMs = 500) { }
         public void Key() { }
@@ -137,22 +137,6 @@ namespace M0LTE.Flex
         public string SenderHandle { get; init; }
         public System.Collections.Generic.IReadOnlyDictionary<string, string> Updated { get; init; }
     }
-    public interface IAudioInput
-    {
-        int SampleRate { get; }
-        int Read(System.Span<float> destination);
-    }
-    public interface IAudioOutput
-    {
-        int SampleRate { get; }
-        void Drain();
-        void Write(System.ReadOnlySpan<float> samples);
-    }
-    public interface IPttControl
-    {
-        void Key();
-        void Unkey();
-    }
     public sealed class MockFlexRadio : System.IAsyncDisposable
     {
         public MockFlexRadio(M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.MockRxMode mode = 1, M0LTE.Flex.MockSetupMode setupMode = 0, string station = "Flex", string sliceLetter = "A") { }
@@ -176,12 +160,6 @@ namespace M0LTE.Flex
     {
         Headless = 0,
         Attach = 1,
-    }
-    public sealed class NullPtt : M0LTE.Flex.IPttControl
-    {
-        public NullPtt() { }
-        public void Key() { }
-        public void Unkey() { }
     }
     public static class Vita49
     {

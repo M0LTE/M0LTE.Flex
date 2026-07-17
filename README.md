@@ -14,7 +14,7 @@ plus the discovery, command/status session and VITA-49 DAX plumbing underneath.
 └──────────────┘                           └───────────────────────────┘
 ```
 
-- **Targets** `net10.0`. No third-party package dependencies — just the BCL.
+- **Targets** `net10.0`. One dependency: [`M0LTE.Radio.Audio`](https://www.nuget.org/packages/M0LTE.Radio.Audio) — the shared `IAudioInput`/`IAudioOutput`/`IPttControl` seam.
 - **Two bring-up modes**: *headless* (this client creates its own slice — no SmartSDR
   running) and *attach* (bind a slice a running SmartSDR already owns).
 - **Both DAX transports**: reduced-bandwidth 24 kHz s16 and full-bandwidth 48 kHz float32.
@@ -48,7 +48,8 @@ var options = new FlexStationOptions
 };
 await using FlexStation station = await FlexStation.SetUpHeadlessAsync(client, format, options);
 
-// 3. Receive, transmit and key through the seams.
+// 3. Receive, transmit and key through the seams (M0LTE.Radio.Audio).
+using M0LTE.Radio.Audio;
 IAudioInput  rx  = station.CreateAudioInput();
 IAudioOutput tx  = station.CreateAudioOutput();
 IPttControl  ptt = station.CreatePtt();
