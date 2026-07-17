@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>M0LTE.Flex</PackageId>
+    <Title>M0LTE.Flex — FlexRadio 6000-series client</Title>
+    <Description>A dependency-free .NET client for FlexRadio 6000-series SDRs over the SmartSDR TCP/UDP API: discovery, the command/status session, VITA-49 DAX audio in and out (24 kHz s16 and 48 kHz float32), and slice PTT. Presents receive/transmit as simple audio-in/audio-out seams plus a keying control, so a modem, a paging encoder or any DSP can drive a Flex like a sound card. Includes an in-process mock radio for hardware-free tests.</Description>
+    <PackageTags>flexradio;flex-6000;smartsdr;dax;vita-49;sdr;amateur-radio;ham-radio;packet-radio</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.Flex.Tests" />
+  </ItemGroup>
+
+</Project>

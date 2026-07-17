@@ -1,0 +1,256 @@
+namespace M0LTE.Flex
+{
+    public sealed class DaxStreamFormat : System.IEquatable<M0LTE.Flex.DaxStreamFormat>
+    {
+        public int BytesPerSample { get; }
+        public bool IsFloat { get; }
+        public bool IsReducedBandwidth { get; }
+        public ushort PacketClassCode { get; }
+        public int PayloadBytesPerPacket { get; }
+        public int SampleRate { get; }
+        public int SamplesPerPacket { get; }
+        public ulong StreamClass { get; }
+        public static M0LTE.Flex.DaxStreamFormat FullBandwidth { get; }
+        public static M0LTE.Flex.DaxStreamFormat ReducedBandwidth { get; }
+        public byte[] BuildPacket(uint streamId, int packetCount, System.ReadOnlySpan<float> samples) { }
+        public int Depacketize(System.ReadOnlySpan<byte> payload, System.Span<float> destination) { }
+        public void WriteSamples(System.ReadOnlySpan<float> samples, System.Span<byte> destination) { }
+        public static M0LTE.Flex.DaxStreamFormat ForDspRate(int dspRate) { }
+    }
+    public sealed class FlexAudioInput : M0LTE.Flex.IAudioInput, System.IDisposable
+    {
+        public FlexAudioInput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, int packetBuffer = 3) { }
+        public long PacketsLost { get; }
+        public long PacketsReceived { get; }
+        public int SampleRate { get; }
+        public void Dispose() { }
+        public void Flush() { }
+        public int Read(System.Span<float> destination) { }
+    }
+    public sealed class FlexAudioOutput : M0LTE.Flex.IAudioOutput
+    {
+        public FlexAudioOutput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, bool paceRealTime = true) { }
+        public long PacketsSent { get; }
+        public int SampleRate { get; }
+        public void Drain() { }
+        public void Write(System.ReadOnlySpan<float> samples) { }
+    }
+    public sealed class FlexClient : System.IAsyncDisposable
+    {
+        public string Handle { get; }
+        public int LocalUdpPort { get; }
+        public string Version { get; }
+        public System.Action<byte[]>? VitaSendHook { get; set; }
+        public event System.Action<string, string>? MessageReceived;
+        public event System.Action<M0LTE.Flex.FlexStatusUpdate>? StatusUpdated;
+        public event System.Action<M0LTE.Flex.VitaPreamble, byte[]>? VitaPacketReceived;
+        public void DeliverVitaPacket(byte[] packet) { }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public System.Threading.Tasks.Task EnableKeepaliveAsync(System.TimeSpan interval, System.Threading.CancellationToken cancellation = default) { }
+        public System.Threading.Tasks.Task InitUdpAsync(System.Threading.CancellationToken cancellation = default) { }
+        public System.Threading.Tasks.Task<M0LTE.Flex.FlexResult> SendCommandAsync(string command, System.Threading.CancellationToken cancellation = default) { }
+        public System.Threading.Tasks.Task<M0LTE.Flex.FlexResult> SendCommandExpectOkAsync(string command, System.Threading.CancellationToken cancellation = default) { }
+        public void SendCommandNoWait(string command) { }
+        public void SendVita(System.ReadOnlySpan<byte> packet) { }
+        public bool TryFindObject(string prefix, System.Func<System.Collections.Generic.IReadOnlyDictionary<string, string>, bool> predicate, out string objectName) { }
+        public bool TryGetObject(string objectName, out System.Collections.Generic.IReadOnlyDictionary<string, string> state) { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexClient> ConnectAsync(string host, int port = 4992, int radioVitaPort = 4991, System.Threading.CancellationToken cancellation = default) { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexClient> DiscoverAndConnectAsync(string? spec, System.TimeSpan timeout, System.Threading.CancellationToken cancellation = default) { }
+    }
+    public static class FlexDiscovery
+    {
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexRadioInfo> DiscoverAsync(string? spec, System.TimeSpan timeout, System.Threading.CancellationToken cancellation = default) { }
+        public static System.Collections.Generic.Dictionary<string, string> ParseFields(string payload) { }
+        public static M0LTE.Flex.FlexRadioInfo ToRadioInfo(System.Collections.Generic.IReadOnlyDictionary<string, string> fields) { }
+        public static M0LTE.Flex.FlexRadioInfo? TryParsePacket(System.ReadOnlySpan<byte> packet) { }
+    }
+    public sealed class FlexProtocolException : System.Exception
+    {
+        public FlexProtocolException(string message) { }
+        public FlexProtocolException(string message, System.Exception inner) { }
+    }
+    public sealed class FlexPtt : M0LTE.Flex.IPttControl
+    {
+        public FlexPtt(M0LTE.Flex.FlexClient client, string sliceIndex, bool confirmInterlock = false, int confirmTimeoutMs = 500) { }
+        public void Key() { }
+        public void Unkey() { }
+    }
+    public sealed class FlexRadioInfo : System.IEquatable<M0LTE.Flex.FlexRadioInfo>
+    {
+        public FlexRadioInfo() { }
+        public string Callsign { get; init; }
+        public System.Collections.Generic.IReadOnlyDictionary<string, string> Fields { get; init; }
+        public string Ip { get; init; }
+        public string Model { get; init; }
+        public string Name { get; init; }
+        public int Port { get; init; }
+        public string Serial { get; init; }
+        public string Version { get; init; }
+    }
+    public readonly struct FlexResult : System.IEquatable<M0LTE.Flex.FlexResult>
+    {
+        public FlexResult(uint Serial, uint Error, string Message) { }
+        public uint Error { get; init; }
+        public bool IsOk { get; }
+        public string Message { get; init; }
+        public uint Serial { get; init; }
+    }
+    public enum FlexSetupMode
+    {
+        Headless = 0,
+        Attach = 1,
+    }
+    public sealed class FlexStation : System.IAsyncDisposable
+    {
+        public M0LTE.Flex.FlexClient Client { get; }
+        public M0LTE.Flex.DaxStreamFormat Format { get; }
+        public M0LTE.Flex.FlexResult? HeadlessBindResult { get; }
+        public uint RxStreamId { get; }
+        public string SliceIndex { get; }
+        public string? TuneWarning { get; }
+        public uint TxStreamId { get; }
+        public M0LTE.Flex.FlexAudioInput CreateAudioInput(int packetBuffer = 3) { }
+        public M0LTE.Flex.FlexAudioOutput CreateAudioOutput(bool paceRealTime = true) { }
+        public M0LTE.Flex.FlexPtt CreatePtt(bool confirmInterlock = false) { }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexStation> SetUpAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.FlexStationOptions options, System.Threading.CancellationToken cancellation = default) { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexStation> SetUpHeadlessAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.FlexStationOptions options, System.Threading.CancellationToken cancellation = default) { }
+    }
+    public sealed class FlexStationOptions : System.IEquatable<M0LTE.Flex.FlexStationOptions>
+    {
+        public FlexStationOptions() { }
+        public string Antenna { get; init; }
+        public string DaxChannel { get; init; }
+        public string Frequency { get; init; }
+        public int Gain { get; init; }
+        public bool Keepalive { get; init; }
+        public System.TimeSpan SetupTimeout { get; init; }
+        public string SliceLetter { get; init; }
+        public string SliceMode { get; init; }
+        public string Station { get; init; }
+    }
+    public readonly struct FlexStatusUpdate : System.IEquatable<M0LTE.Flex.FlexStatusUpdate>
+    {
+        public FlexStatusUpdate(string SenderHandle, string Object, System.Collections.Generic.IReadOnlyDictionary<string, string> Updated, System.Collections.Generic.IReadOnlyDictionary<string, string> Current) { }
+        public System.Collections.Generic.IReadOnlyDictionary<string, string> Current { get; init; }
+        public string Object { get; init; }
+        public string SenderHandle { get; init; }
+        public System.Collections.Generic.IReadOnlyDictionary<string, string> Updated { get; init; }
+    }
+    public interface IAudioInput
+    {
+        int SampleRate { get; }
+        int Read(System.Span<float> destination);
+    }
+    public interface IAudioOutput
+    {
+        int SampleRate { get; }
+        void Drain();
+        void Write(System.ReadOnlySpan<float> samples);
+    }
+    public interface IPttControl
+    {
+        void Key();
+        void Unkey();
+    }
+    public sealed class MockFlexRadio : System.IAsyncDisposable
+    {
+        public MockFlexRadio(M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.MockRxMode mode = 1, M0LTE.Flex.MockSetupMode setupMode = 0, string station = "Flex", string sliceLetter = "A") { }
+        public System.Collections.Generic.IReadOnlyList<float> CapturedTxSamples { get; }
+        public System.Collections.Generic.IReadOnlyList<string> CommandLog { get; }
+        public System.Action<byte[]>? RxDelivery { get; set; }
+        public int TcpPort { get; }
+        public int UdpPort { get; }
+        public void DeliverTxPacket(byte[] packet) { }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public System.Threading.Tasks.Task ReplayRxAsync(System.ReadOnlyMemory<float> samples, System.Threading.CancellationToken cancellation = default) { }
+        public void Start() { }
+        public void WriteCapturedTxWav(string path) { }
+    }
+    public enum MockRxMode
+    {
+        Silence = 0,
+        Loopback = 1,
+    }
+    public enum MockSetupMode
+    {
+        Headless = 0,
+        Attach = 1,
+    }
+    public sealed class NullPtt : M0LTE.Flex.IPttControl
+    {
+        public NullPtt() { }
+        public void Key() { }
+        public void Unkey() { }
+    }
+    public static class Vita49
+    {
+        public const int DaxHeaderBytes = 28;
+        public const int DaxHeaderWords = 7;
+        public const ushort DiscoveryClass = 65535;
+        public const int DiscoveryPort = 4992;
+        public const uint DiscoveryStreamId = 2048u;
+        public const ushort FftClass = 32771;
+        public const ushort FlexInformationClass = 21324;
+        public const uint FlexOui = 7213u;
+        public const ulong FullDaxStreamClass = 30980996596707ul;
+        public const ushort IfNarrowClass = 995;
+        public const int MaxVitaPacketSize = 16384;
+        public const ushort MeterClass = 32770;
+        public const ushort OpusClass = 32773;
+        public const int RadioVitaPort = 4991;
+        public const ushort ReducedDaxAudioClass = 291;
+        public const ulong ReducedDaxStreamClass = 30980996596003ul;
+        public const ushort WaterfallClass = 32772;
+        public static byte[] BuildDaxAudioPacket(ulong streamClass, uint streamId, int packetCount, System.ReadOnlySpan<byte> payload) { }
+        public static byte[] BuildDiscoveryPacket(string keyValues) { }
+        public static bool TryParsePreamble(System.ReadOnlySpan<byte> data, out M0LTE.Flex.VitaPreamble preamble) { }
+    }
+    public readonly struct VitaClassId : System.IEquatable<M0LTE.Flex.VitaClassId>
+    {
+        public VitaClassId(uint Oui, ushort InformationClassCode, ushort PacketClassCode) { }
+        public ushort InformationClassCode { get; init; }
+        public uint Oui { get; init; }
+        public ushort PacketClassCode { get; init; }
+    }
+    public enum VitaPacketType
+    {
+        IfData = 0,
+        IfDataWithStream = 1,
+        ExtData = 2,
+        ExtDataWithStream = 3,
+        IfContext = 4,
+        ExtContext = 5,
+    }
+    public readonly struct VitaPreamble : System.IEquatable<M0LTE.Flex.VitaPreamble>
+    {
+        public VitaPreamble(M0LTE.Flex.VitaPacketType PacketType, bool HasClassId, bool HasTrailer, M0LTE.Flex.VitaTsi Tsi, M0LTE.Flex.VitaTsf Tsf, int PacketCount, int PacketSizeWords, uint StreamId, M0LTE.Flex.VitaClassId ClassId, uint TimestampInt, ulong TimestampFrac, int PayloadOffset, int PayloadLength) { }
+        public M0LTE.Flex.VitaClassId ClassId { get; init; }
+        public bool HasClassId { get; init; }
+        public bool HasTrailer { get; init; }
+        public int PacketCount { get; init; }
+        public int PacketSizeWords { get; init; }
+        public M0LTE.Flex.VitaPacketType PacketType { get; init; }
+        public int PayloadLength { get; init; }
+        public int PayloadOffset { get; init; }
+        public uint StreamId { get; init; }
+        public ulong TimestampFrac { get; init; }
+        public uint TimestampInt { get; init; }
+        public M0LTE.Flex.VitaTsf Tsf { get; init; }
+        public M0LTE.Flex.VitaTsi Tsi { get; init; }
+    }
+    public enum VitaTsf
+    {
+        None = 0,
+        SampleCount = 1,
+        RealTime = 2,
+        FreeRunning = 3,
+    }
+    public enum VitaTsi
+    {
+        None = 0,
+        Utc = 1,
+        Gps = 2,
+        Other = 3,
+    }
+}

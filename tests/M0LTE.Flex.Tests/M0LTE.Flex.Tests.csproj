@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.Flex/M0LTE.Flex.csproj" />
+  </ItemGroup>
+
+</Project>
