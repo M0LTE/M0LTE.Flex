@@ -6,12 +6,12 @@ so a modem, a paging encoder, or any DSP can drive a Flex the way it would drive
 plus the discovery, command/status session and VITA-49 DAX plumbing underneath.
 
 ```
-┌──────────────┐   discover / connect    ┌───────────────────────────┐
-│  your app    │ ───────────────────────▶│  FlexClient  (TCP :4992)  │
+┌──────────────┐   discover / connect      ┌───────────────────────────┐
+│  your app    │ ────────────────────────▶│  FlexClient  (TCP :4992)  │
 │ (modem, DSP, │   IAudioInput  (RX) ◀────│  FlexStation (slice+DAX)  │──▶ FLEX-6000
 │  paging, …)  │   IAudioOutput (TX) ────▶│  VITA-49 DAX  (UDP :4991) │
 │              │   IPttControl  ─────────▶│  slice PTT (xmit 1/0)     │
-└──────────────┘                          └───────────────────────────┘
+└──────────────┘                           └───────────────────────────┘
 ```
 
 - **Targets** `net10.0`. No third-party package dependencies — just the BCL.
