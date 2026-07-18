@@ -62,6 +62,7 @@ public sealed class FlexClient : IAsyncDisposable
     private Task? _readLoop;
     private Task? _udpLoop;
     private Task? _keepalive;
+    private int _disposed;
     private uint _cmdSeq;
 
     private FlexClient(TcpClient tcp)
@@ -556,6 +557,11 @@ public sealed class FlexClient : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;                                            // idempotent — safe to dispose twice (e.g. via an owning FlexStation/FlexWaveform)
+        }
+
         await _lifetime.CancelAsync().ConfigureAwait(false);
         try
         {

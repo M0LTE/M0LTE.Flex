@@ -1,5 +1,15 @@
 namespace M0LTE.Flex
 {
+    public sealed class DaxIqStreamBuffer
+    {
+        public DaxIqStreamBuffer(int capacityPairs) { }
+        public long PacketsLost { get; }
+        public long PacketsReceived { get; }
+        public long SamplesDropped { get; }
+        public void Ingest(int packetCount, System.ReadOnlySpan<byte> payload) { }
+        public int Read(System.Span<float> destination) { }
+        public void Stop() { }
+    }
     public sealed class DaxStreamFormat : System.IEquatable<M0LTE.Flex.DaxStreamFormat>
     {
         public int BytesPerSample { get; }
@@ -56,6 +66,26 @@ namespace M0LTE.Flex
         public bool TryGetObject(string objectName, out System.Collections.Generic.IReadOnlyDictionary<string, string> state) { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexClient> ConnectAsync(string host, int port = 4992, int radioVitaPort = 4991, System.Threading.CancellationToken cancellation = default) { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexClient> DiscoverAndConnectAsync(string? spec, System.TimeSpan timeout, System.Threading.CancellationToken cancellation = default) { }
+    }
+    public readonly struct FlexDaxIqOptions : System.IEquatable<M0LTE.Flex.FlexDaxIqOptions>
+    {
+        public FlexDaxIqOptions(string FrequencyMHz = "14.100000", string Antenna = "ANT1", int DaxChannel = 2, int RateKsps = 96, double RingSeconds = 0.5) { }
+        public string Antenna { get; init; }
+        public int DaxChannel { get; init; }
+        public string FrequencyMHz { get; init; }
+        public int RateKsps { get; init; }
+        public double RingSeconds { get; init; }
+    }
+    public sealed class FlexDaxIqSource : M0LTE.Flex.IIqSource, System.IAsyncDisposable
+    {
+        public double CentreFrequencyHz { get; }
+        public long PacketsLost { get; }
+        public long PacketsReceived { get; }
+        public int SampleRate { get; }
+        public uint StreamId { get; }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public int Read(System.Span<float> interleaved) { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexDaxIqSource> OpenAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexDaxIqOptions options, bool ownsClient = false, System.Threading.CancellationToken cancellation = default) { }
     }
     public static class FlexDiscovery
     {
@@ -137,10 +167,51 @@ namespace M0LTE.Flex
         public string SenderHandle { get; init; }
         public System.Collections.Generic.IReadOnlyDictionary<string, string> Updated { get; init; }
     }
+    public sealed class FlexWaveform : System.IAsyncDisposable
+    {
+        public M0LTE.Flex.FlexClient Client { get; }
+        public string SliceIndex { get; }
+        public string? TuneWarning { get; }
+        public string WaveformName { get; }
+        public M0LTE.Flex.FlexWaveformIqOutput CreateIqOutput(double bufferSeconds = 3) { }
+        public M0LTE.Flex.FlexPtt CreatePtt(bool confirmInterlock = false) { }
+        public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexWaveform> SetUpHeadlessAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexWaveformOptions options, System.Threading.CancellationToken cancellation = default) { }
+    }
+    public sealed class FlexWaveformIqOutput : System.IDisposable
+    {
+        public const int SampleRate = 24000;
+        public FlexWaveformIqOutput(M0LTE.Flex.FlexClient client, double bufferSeconds = 3) { }
+        public long PacketsReflected { get; }
+        public long SamplesStarved { get; }
+        public void Dispose() { }
+        public bool Drain(System.TimeSpan timeout) { }
+        public void Write(System.ReadOnlySpan<float> interleavedIq) { }
+    }
+    public sealed class FlexWaveformOptions : System.IEquatable<M0LTE.Flex.FlexWaveformOptions>
+    {
+        public FlexWaveformOptions() { }
+        public string Antenna { get; init; }
+        public string Frequency { get; init; }
+        public string Mode { get; init; }
+        public string Name { get; init; }
+        public int? RfPower { get; init; }
+        public System.TimeSpan SetupTimeout { get; init; }
+        public int TxFilterHighHz { get; init; }
+        public int TxFilterLowHz { get; init; }
+        public string UnderlyingMode { get; init; }
+    }
+    public interface IIqSource
+    {
+        double CentreFrequencyHz { get; }
+        int SampleRate { get; }
+        int Read(System.Span<float> interleaved);
+    }
     public sealed class MockFlexRadio : System.IAsyncDisposable
     {
         public MockFlexRadio(M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.MockRxMode mode = 1, M0LTE.Flex.MockSetupMode setupMode = 0, string station = "Flex", string sliceLetter = "A") { }
         public System.Collections.Generic.IReadOnlyList<float> CapturedTxSamples { get; }
+        public System.Collections.Generic.IReadOnlyList<float> CapturedWaveformIq { get; }
         public System.Collections.Generic.IReadOnlyList<string> CommandLog { get; }
         public System.Action<byte[]>? RxDelivery { get; set; }
         public int TcpPort { get; }
@@ -230,5 +301,14 @@ namespace M0LTE.Flex
         Utc = 1,
         Gps = 2,
         Other = 3,
+    }
+    public sealed class WaveformIqTxBuffer
+    {
+        public WaveformIqTxBuffer(int capacityPairs) { }
+        public long SamplesStarved { get; }
+        public void Complete() { }
+        public void TakePacket(System.Span<float> destination) { }
+        public bool WaitDrained(System.TimeSpan timeout) { }
+        public void Write(System.ReadOnlySpan<float> interleavedIq) { }
     }
 }

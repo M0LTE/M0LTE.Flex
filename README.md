@@ -67,6 +67,60 @@ ptt.Unkey();                        // …then release
 integer ratio (48000 → full-bandwidth 1:1; 12000/24000 → reduced-bandwidth). The audio seams
 always present samples at `format.SampleRate`; resample to your own rate on the way in/out.
 
+## Wideband IQ receive (DAX-IQ)
+
+Stream raw complex baseband from one slice — before the SSB filter and AGC — for a wideband
+decoder or to fan several channels out of a single capture.
+
+```csharp
+using M0LTE.Flex;
+
+await using FlexClient client = await FlexClient.ConnectAsync("192.168.1.50");
+
+// A 96 kSPS DAX-IQ stream centred on 14.100 MHz (rates: 24/48/96/192 kSPS).
+await using FlexDaxIqSource iq = await FlexDaxIqSource.OpenAsync(
+    client,
+    new FlexDaxIqOptions(FrequencyMHz: "14.100000", Antenna: "ANT1", DaxChannel: 2, RateKsps: 96),
+    ownsClient: true);
+
+// Read blocks of interleaved I, Q floats at iq.SampleRate (host-endian). Read blocks until data
+// arrives, and returns 0 once disposed — pump it like a capture device.
+Span<float> block = new float[8192];
+int got = iq.Read(block);          // got floats = got / 2 complex samples
+Console.WriteLine($"{iq.PacketsReceived} packets, {iq.PacketsLost} lost");
+```
+
+`FlexDaxIqSource` implements `IIqSource` (`SampleRate` / `CentreFrequencyHz` / `Read`), so a
+digital-downconverter front end can fan it into several narrowband channels.
+
+## Wideband IQ transmit (Waveform API)
+
+Transmit arbitrary complex IQ through a custom waveform — the only way to put wideband IQ on air
+on a 6000-series radio. `underlying_mode=RAW` carries both sidebands (true wideband complex);
+`USB`/`IQ` are single-sideband.
+
+```csharp
+using M0LTE.Flex;
+
+await using FlexClient client = await FlexClient.ConnectAsync("192.168.1.50");
+
+await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(
+    client,
+    new FlexWaveformOptions { Frequency = "14.100000", Antenna = "ANT1", UnderlyingMode = "RAW", RfPower = 10 });
+
+using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
+FlexPtt ptt = waveform.CreatePtt(confirmInterlock: true);
+
+ptt.Key();                               // the radio starts pulling TX buffers from us
+iq.Write(myComplexIq);                   // interleaved I, Q at FlexWaveformIqOutput.SampleRate (24 kHz)
+iq.Drain(TimeSpan.FromSeconds(5));       // block until the burst has gone out…
+ptt.Unkey();                             // …then release
+```
+
+The waveform is reflection-driven: while keyed, the radio streams TX buffers and
+`FlexWaveformIqOutput` reflects your buffered IQ back for each one. Bandwidth is capped by the
+24 kHz waveform rate (±12 kHz).
+
 ## Testing without a radio
 
 ```csharp

@@ -49,6 +49,10 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private const uint RxStreamId = 0x04000000;
     private const uint TxStreamId = 0x08000000;
 
+    /// <summary>The odd stream id the mock pushes waveform TX buffers on while keyed (odd = the
+    /// transmit direction; the client reflects IQ back on the same id — docs/flex-integration.md §9.2).</summary>
+    private const uint WaveformTxStreamId = 0x0A000001;
+
     private const uint RejectedError = 0x50000000;
     private const uint AlreadyBoundError = 0x5000003E;
 
@@ -68,7 +72,11 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _tcpWrite = new(1, 1);
     private readonly List<float> _capturedTx = [];
+    private readonly List<float> _capturedWaveformIq = [];
     private readonly object _captureLock = new();
+    private volatile bool _waveformRegistered;
+    private CancellationTokenSource? _waveformPush;
+    private int _waveformPushCount;
     private readonly List<string> _commandLog = [];
     private readonly object _commandLogLock = new();
 
@@ -132,6 +140,19 @@ public sealed class MockFlexRadio : IAsyncDisposable
             lock (_captureLock)
             {
                 return _capturedTx.ToArray();
+            }
+        }
+    }
+
+    /// <summary>All interleaved <c>I, Q</c> samples the client reflected back on the waveform TX
+    /// stream (the wideband IQ TX path — docs/flex-integration.md §9.2).</summary>
+    public IReadOnlyList<float> CapturedWaveformIq
+    {
+        get
+        {
+            lock (_captureLock)
+            {
+                return _capturedWaveformIq.ToArray();
             }
         }
     }
@@ -373,14 +394,31 @@ public sealed class MockFlexRadio : IAsyncDisposable
                 await WriteLineAsync($"S{HandleHex}|slice 0 tx=1").ConfigureAwait(false);
             }
         }
+        else if (cmd.StartsWith("waveform create", StringComparison.Ordinal))
+        {
+            // A custom waveform registers — remember it so a subsequent key streams TX buffers for
+            // it (the wideband IQ TX path). `waveform set …` falls through to the permissive branch.
+            _waveformRegistered = true;
+            await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("waveform remove", StringComparison.Ordinal))
+        {
+            _waveformRegistered = false;
+            await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
+        }
         else if (cmd == "xmit 1")
         {
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=PTT_REQUESTED").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=TRANSMITTING").ConfigureAwait(false);
+            if (_waveformRegistered)
+            {
+                StartWaveformPush();
+            }
         }
         else if (cmd == "xmit 0")
         {
+            StopWaveformPush();
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=UNKEY_REQUESTED").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=RECEIVE").ConfigureAwait(false);
@@ -434,13 +472,31 @@ public sealed class MockFlexRadio : IAsyncDisposable
 
     private void HandleTxPacket(ReadOnlySpan<byte> packet)
     {
-        if (!Vita49.TryParsePreamble(packet, out VitaPreamble preamble)
-            || preamble.StreamId != TxStreamId)
+        if (!Vita49.TryParsePreamble(packet, out VitaPreamble preamble))
         {
             return;
         }
 
         ReadOnlySpan<byte> payload = packet.Slice(preamble.PayloadOffset, preamble.PayloadLength);
+
+        if (preamble.StreamId == WaveformTxStreamId)
+        {
+            // A waveform TX reflection: capture the interleaved I/Q (always full-bandwidth float32).
+            var iq = new float[payload.Length / 4];
+            DaxStreamFormat.FullBandwidth.Depacketize(payload, iq);
+            lock (_captureLock)
+            {
+                _capturedWaveformIq.AddRange(iq);
+            }
+
+            return;
+        }
+
+        if (preamble.StreamId != TxStreamId)
+        {
+            return;
+        }
+
         CaptureTx(payload);
 
         if (_mode == MockRxMode.Loopback)
@@ -449,6 +505,46 @@ public sealed class MockFlexRadio : IAsyncDisposable
             byte[] echo = Vita49.BuildDaxAudioPacket(_format.StreamClass, RxStreamId, _rxCount, payload);
             _rxCount = (_rxCount + 1) & 0x0F;
             DeliverRx(echo);
+        }
+    }
+
+    // While keyed with a waveform registered, stream TX buffers to the client the way the radio does
+    // (odd stream id, full-bandwidth IF-data class, silent "mic" payload) so the client's
+    // FlexWaveformIqOutput reflects its buffered IQ back for HandleTxPacket to capture.
+    private void StartWaveformPush()
+    {
+        StopWaveformPush();
+        var cts = new CancellationTokenSource();
+        _waveformPush = cts;
+        _ = Task.Run(() => WaveformPushLoopAsync(cts.Token));
+    }
+
+    private void StopWaveformPush()
+    {
+        CancellationTokenSource? cts = Interlocked.Exchange(ref _waveformPush, null);
+        if (cts is not null)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+    }
+
+    private async Task WaveformPushLoopAsync(CancellationToken cancellation)
+    {
+        var silence = new float[256]; // 128 complex "mic" samples the radio hands the waveform
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                byte[] buffer = DaxStreamFormat.FullBandwidth.BuildPacket(WaveformTxStreamId, _waveformPushCount, silence);
+                _waveformPushCount = (_waveformPushCount + 1) & 0x0F;
+                DeliverRx(buffer);
+                await Task.Delay(1, cancellation).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Unkeyed.
         }
     }
 
@@ -486,6 +582,7 @@ public sealed class MockFlexRadio : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        StopWaveformPush();
         await _lifetime.CancelAsync().ConfigureAwait(false);
         try
         {
