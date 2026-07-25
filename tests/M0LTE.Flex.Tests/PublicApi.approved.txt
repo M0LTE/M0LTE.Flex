@@ -227,6 +227,7 @@ namespace M0LTE.Flex
         public FlexWaveformIqOutput(M0LTE.Flex.FlexClient client, double bufferSeconds = 3) { }
         public long PacketsReflected { get; }
         public long SamplesStarved { get; }
+        public bool Transmitting { get; }
         public void Dispose() { }
         public bool Drain(System.TimeSpan timeout) { }
         public void Write(System.ReadOnlySpan<float> interleavedIq) { }
@@ -362,6 +363,7 @@ namespace M0LTE.Flex
     public sealed class WaveformIqTxBuffer
     {
         public WaveformIqTxBuffer(int capacityPairs) { }
+        public bool IsEmpty { get; }
         public long SamplesStarved { get; }
         public void Complete() { }
         public void TakePacket(System.Span<float> destination) { }

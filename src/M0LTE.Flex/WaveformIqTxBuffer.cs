@@ -35,6 +35,19 @@ public sealed class WaveformIqTxBuffer
     /// <summary>Complex samples the radio pulled but the ring could not supply (a starved burst).</summary>
     public long SamplesStarved { get; private set; }
 
+    /// <summary>Whether every queued sample has been taken. The signal a waveform uses to
+    /// know its post-unkey flush is complete and it may stop emitting.</summary>
+    public bool IsEmpty
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _count == 0;
+            }
+        }
+    }
+
     /// <summary>Enqueues interleaved <c>I, Q</c> samples for transmission, blocking while the ring is
     /// full (back-pressure) until the radio drains space or the buffer is <see cref="Complete">
     /// completed</see>. Length must be even (whole pairs).</summary>

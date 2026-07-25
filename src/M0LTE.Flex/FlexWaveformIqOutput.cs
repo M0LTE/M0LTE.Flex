@@ -37,7 +37,60 @@ public sealed class FlexWaveformIqOutput : IDisposable
         _client = client;
         _buffer = new WaveformIqTxBuffer(Math.Max(SampleRate / 2, (int)(SampleRate * bufferSeconds)));
         _onVita = OnVita;
+        _onStatus = OnStatus;
         client.VitaPacketReceived += _onVita;
+        client.StatusUpdated += _onStatus;
+    }
+
+    private readonly Action<FlexStatusUpdate> _onStatus;
+    private volatile bool _transmitting;
+    private volatile bool _flushing;
+
+    /// <summary>Whether the sink is currently answering the radio's transmit-buffer requests.</summary>
+    public bool Transmitting => _transmitting;
+
+    /// <summary>
+    /// Tracks the interlock so IQ is emitted only while the radio is actually transmitting.
+    /// </summary>
+    /// <remarks>
+    /// <para>The radio asks for transmit buffers <b>continuously</b> once a slice is in a
+    /// waveform mode — measured at the full 187.5/s whether keyed or not, and continuing
+    /// indefinitely after <c>xmit 0</c> with the interlock parked in UNKEY_REQUESTED. That is
+    /// normal: FlexRadio's own waveform SDK (<c>smartsdr-dsp</c>, <c>sched_waveform.c</c>)
+    /// emits only between PTT and the post-unkey flush, setting <c>inhibit_tx</c> on
+    /// UNKEY_REQUESTED and staying silent until the next key.</para>
+    /// <para>Answering unconditionally, as this class previously did, drains the transmit ring
+    /// around the clock: samples queued before the PA comes up are consumed and discarded, so
+    /// a burst goes out truncated with no error and a starve count of zero. Gating on the
+    /// interlock is what makes "queue a burst, then key" mean what it says.</para>
+    /// </remarks>
+    private void OnStatus(FlexStatusUpdate update)
+    {
+        if (!update.Object.StartsWith("interlock", StringComparison.OrdinalIgnoreCase)
+            || !update.Updated.TryGetValue("state", out string? state))
+        {
+            return;
+        }
+
+        switch (state)
+        {
+            case "PTT_REQUESTED":
+            case "TRANSMITTING":
+                _flushing = false;
+                _transmitting = true;
+                break;
+
+            case "UNKEY_REQUESTED":
+                // Keep emitting until the ring empties, so the tail of the burst reaches the
+                // air, then fall silent — the SDK's flush-then-inhibit sequence.
+                _flushing = true;
+                break;
+
+            default:
+                _flushing = false;
+                _transmitting = false;
+                break;
+        }
     }
 
     /// <summary>Waveform TX packets reflected to the radio.</summary>
@@ -66,6 +119,14 @@ public sealed class FlexWaveformIqOutput : IDisposable
             return;
         }
 
+        // Only answer while transmitting. Outside that window the radio is still asking, but
+        // anything we hand it is discarded — and taking it from the ring would throw away a
+        // burst that has been queued for the next transmission.
+        if (!_transmitting)
+        {
+            return;
+        }
+
         int floats = Math.Min(packet.Payload.Length / 4, _reflect.Length) & ~1;   // whole I/Q pairs
         if (floats == 0)
         {
@@ -78,6 +139,14 @@ public sealed class FlexWaveformIqOutput : IDisposable
         _packetCount = (_packetCount + 1) & 0x0F;
         _client.SendVita(reply);
         PacketsReflected++;
+
+        if (_flushing && _buffer.IsEmpty)
+        {
+            // Tail delivered. Stop answering until the next key — the radio does not announce
+            // its return to RECEIVE on this path, so the ring emptying is the only signal.
+            _flushing = false;
+            _transmitting = false;
+        }
     }
 
     /// <inheritdoc />
@@ -89,6 +158,7 @@ public sealed class FlexWaveformIqOutput : IDisposable
         }
 
         _client.VitaPacketReceived -= _onVita;
+        _client.StatusUpdated -= _onStatus;
         _buffer.Complete();
     }
 }

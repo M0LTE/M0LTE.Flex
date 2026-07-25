@@ -90,4 +90,74 @@ public sealed class FlexWaveformTests
             await Task.Delay(10);
         }
     }
+
+    [Fact]
+    public async Task A_queued_burst_survives_until_the_radio_is_keyed()
+    {
+        // The regression that cost a live session. A real 6500 asks for transmit buffers
+        // continuously once a slice is in a waveform mode — keyed or not, and indefinitely
+        // after xmit 0 — so a sink that answers unconditionally drains its own ring around
+        // the clock. Samples queued before the key were consumed and discarded, and the burst
+        // went out truncated with no error raised and a starve count of zero, because from the
+        // client's side everything had been "sent".
+        var mock = new MockFlexRadio(DaxStreamFormat.FullBandwidth, MockRxMode.Silence);
+        mock.Start();
+        await using var _ = mock;
+
+        FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
+        mock.RxDelivery = client.DeliverVitaPacket;
+        client.VitaSendHook = mock.DeliverTxPacket;
+
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+        using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
+        FlexPtt ptt = waveform.CreatePtt();
+
+        float[] burst = MakeIqBurst(pairs: 640);
+        iq.Write(burst);
+
+        // The radio is already pulling. Give it time to eat the burst if the sink lets it.
+        iq.Transmitting.Should().BeFalse("nothing has been keyed yet");
+        await Task.Delay(300);
+        mock.CapturedWaveformIq.Should().BeEmpty("a sink must not answer before the PA is up");
+
+        ptt.Key();
+        await WaitForAsync(() => mock.CapturedWaveformIq.Count >= burst.Length);
+        ptt.Unkey();
+
+        // Every queued sample reached the radio, in order, having survived the wait.
+        mock.CapturedWaveformIq.Take(burst.Length).Should().Equal(burst);
+    }
+
+    [Fact]
+    public async Task The_sink_falls_silent_once_its_tail_has_gone_out()
+    {
+        // After UNKEY_REQUESTED the reference waveform flushes what is left and then stops
+        // emitting (smartsdr-dsp sched_waveform.c: flush_tx then inhibit_tx). It cannot wait
+        // for a return to RECEIVE, because on this path the radio never sends one — the ring
+        // emptying is the only available signal.
+        var mock = new MockFlexRadio(DaxStreamFormat.FullBandwidth, MockRxMode.Silence);
+        mock.Start();
+        await using var _ = mock;
+
+        FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
+        mock.RxDelivery = client.DeliverVitaPacket;
+        client.VitaSendHook = mock.DeliverTxPacket;
+
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+        using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
+        FlexPtt ptt = waveform.CreatePtt();
+
+        iq.Write(MakeIqBurst(pairs: 256));
+        ptt.Key();
+        await WaitForAsync(() => mock.CapturedWaveformIq.Count >= 512);
+        ptt.Unkey();
+
+        await WaitForAsync(() => !iq.Transmitting);
+        iq.Transmitting.Should().BeFalse();
+
+        long settled = mock.CapturedWaveformIq.Count;
+        await Task.Delay(300);
+        mock.CapturedWaveformIq.Count.Should().Be(
+            (int)settled, "the radio keeps asking, but a silent sink must stop answering");
+    }
 }

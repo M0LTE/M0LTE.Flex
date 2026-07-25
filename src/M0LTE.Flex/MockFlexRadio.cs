@@ -75,7 +75,7 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private readonly List<float> _capturedTx = [];
     private readonly List<float> _capturedWaveformIq = [];
     private readonly object _captureLock = new();
-    private volatile bool _waveformRegistered;
+    private volatile bool _waveformActive;
     private CancellationTokenSource? _waveformPush;
     private int _waveformPushCount;
     private readonly List<string> _commandLog = [];
@@ -399,12 +399,20 @@ public sealed class MockFlexRadio : IAsyncDisposable
         {
             // A custom waveform registers — remember it so a subsequent key streams TX buffers for
             // it (the wideband IQ TX path). `waveform set …` falls through to the permissive branch.
-            _waveformRegistered = true;
+            _waveformActive = true;
+            // A real 6500 begins asking for transmit buffers as soon as a slice is in a
+            // waveform mode and never stops — measured at the full 187.5/s, keyed or not, and
+            // continuing indefinitely after xmit 0. Modelling that here is what lets an
+            // offline test catch a client that answers when it should not: one that drains
+            // its own transmit ring around the clock, so a queued burst is discarded before
+            // the PA ever comes up.
+            StartWaveformPush();
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("waveform remove", StringComparison.Ordinal))
         {
-            _waveformRegistered = false;
+            _waveformActive = false;
+            StopWaveformPush();
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
         }
         else if (cmd == "meter list")
@@ -420,17 +428,21 @@ public sealed class MockFlexRadio : IAsyncDisposable
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=PTT_REQUESTED").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=TRANSMITTING").ConfigureAwait(false);
-            if (_waveformRegistered)
-            {
-                StartWaveformPush();
-            }
         }
         else if (cmd == "xmit 0")
         {
-            StopWaveformPush();
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
             await WriteLineAsync($"S{HandleHex}|interlock state=UNKEY_REQUESTED").ConfigureAwait(false);
-            await WriteLineAsync($"S{HandleHex}|interlock state=RECEIVE").ConfigureAwait(false);
+
+            // The DAX path returns to RECEIVE and is modelled as such. The WAVEFORM path does
+            // not: on a real 6500 the interlock reports transitions up to UNKEY_REQUESTED and
+            // never announces its return, while the radio carries on requesting transmit
+            // buffers. Emitting a tidy RECEIVE there would let a client wait on a signal the
+            // radio does not send — which is exactly the mistake this models away.
+            if (!_waveformActive)
+            {
+                await WriteLineAsync($"S{HandleHex}|interlock state=RECEIVE").ConfigureAwait(false);
+            }
         }
         else
         {
