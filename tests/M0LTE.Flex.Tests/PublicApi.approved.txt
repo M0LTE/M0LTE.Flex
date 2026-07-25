@@ -53,7 +53,7 @@ namespace M0LTE.Flex
         public System.Action<byte[]>? VitaSendHook { get; set; }
         public event System.Action<string, string>? MessageReceived;
         public event System.Action<M0LTE.Flex.FlexStatusUpdate>? StatusUpdated;
-        public event System.Action<M0LTE.Flex.VitaPreamble, byte[]>? VitaPacketReceived;
+        public event System.Action<M0LTE.Flex.VitaPacket>? VitaPacketReceived;
         public void DeliverVitaPacket(byte[] packet) { }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
         public System.Threading.Tasks.Task EnableKeepaliveAsync(System.TimeSpan interval, System.Threading.CancellationToken cancellation = default) { }
@@ -93,6 +93,49 @@ namespace M0LTE.Flex
         public static System.Collections.Generic.Dictionary<string, string> ParseFields(string payload) { }
         public static M0LTE.Flex.FlexRadioInfo ToRadioInfo(System.Collections.Generic.IReadOnlyDictionary<string, string> fields) { }
         public static M0LTE.Flex.FlexRadioInfo? TryParsePacket(System.ReadOnlySpan<byte> packet) { }
+    }
+    public sealed class FlexMeterDescriptor : System.IEquatable<M0LTE.Flex.FlexMeterDescriptor>
+    {
+        public FlexMeterDescriptor(int Id, string Source, string SourceOrdinal, string Name, string Unit, double Low, double High, string Description, double Fps) { }
+        public string Description { get; init; }
+        public double Fps { get; init; }
+        public double High { get; init; }
+        public int Id { get; init; }
+        public double Low { get; init; }
+        public string Name { get; init; }
+        public string Source { get; init; }
+        public string SourceOrdinal { get; init; }
+        public string Unit { get; init; }
+    }
+    public sealed class FlexMeterReading : System.IEquatable<M0LTE.Flex.FlexMeterReading>
+    {
+        public FlexMeterReading(M0LTE.Flex.FlexMeterDescriptor Descriptor, short Raw, double Value, System.DateTime UtcTime) { }
+        public M0LTE.Flex.FlexMeterDescriptor Descriptor { get; init; }
+        public short Raw { get; init; }
+        public System.DateTime UtcTime { get; init; }
+        public double Value { get; init; }
+    }
+    public sealed class FlexMeters : System.IDisposable
+    {
+        public System.Collections.Generic.IReadOnlyDictionary<int, M0LTE.Flex.FlexMeterDescriptor> Descriptors { get; }
+        public long PacketsReceived { get; }
+        public System.Collections.Generic.IReadOnlyDictionary<int, long> SamplesById { get; }
+        public int SubscribeErrors { get; }
+        public long UnknownIdSamples { get; }
+        public event System.Action<M0LTE.Flex.FlexMeterReading>? Updated;
+        public void Dispose() { }
+        public System.Collections.Generic.IReadOnlyList<M0LTE.Flex.FlexMeterReading> Snapshot() { }
+        public double? SwrFromPowers(double minForwardDbm = 20) { }
+        public bool TryGet(string name, out M0LTE.Flex.FlexMeterReading reading) { }
+        public static double DbmToWatts(double dbm) { }
+        [return: System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Id",
+                "Raw"})]
+        public static System.Collections.Generic.List<System.ValueTuple<int, short>> DecodePayload(System.ReadOnlySpan<byte> payload) { }
+        public static M0LTE.Flex.FlexMeters None(M0LTE.Flex.FlexClient client) { }
+        public static System.Collections.Generic.IReadOnlyList<M0LTE.Flex.FlexMeterDescriptor> ParseMeterList(string? message) { }
+        public static double Scale(short raw, string unit) { }
+        public static System.Threading.Tasks.Task<M0LTE.Flex.FlexMeters> SubscribeAsync(M0LTE.Flex.FlexClient client, System.Threading.CancellationToken cancellation = default) { }
     }
     public sealed class FlexProtocolException : System.Exception
     {
@@ -209,6 +252,8 @@ namespace M0LTE.Flex
     }
     public sealed class MockFlexRadio : System.IAsyncDisposable
     {
+        public const string MeterListReply = @"meter 1.src=COD-#1.num=1#1.nam=MICPEAK#1.low=-150.0#1.hi=20.0#1.desc=Signal strength of MIC output in CODEC#1.unit=dBFS#1.fps=40#3.src=TX-#3.num=5#3.nam=HWALC#3.low=-150.0#3.hi=20.0#3.desc=Voltage present at the Hardware ALC RCA Plug#3.unit=dBFS#3.fps=20#4.src=RAD#4.num=208#4.nam=+13.8A#4.low=10.5#4.hi=15.0#4.desc=Main radio input voltage before fuse#4.unit=Volts#4.fps=0#6.src=TX-#6.num=1#6.nam=FWDPWR#6.low=0.0#6.hi=53.0#6.desc=RF Power Forward#6.unit=dBm#6.fps=20#7.src=TX-#7.num=2#7.nam=REFPWR#7.low=0.0#7.hi=53.0#7.desc=RF Power Reflected#7.unit=dBm#7.fps=20#8.src=TX-#8.num=3#8.nam=SWR#8.low=1.0#8.hi=999.0#8.desc=RF SWR#8.unit=SWR#8.fps=20#9.src=TX-#9.num=4#9.nam=PATEMP#9.low=0.0#9.hi=120.0#9.desc=PA Temperature#9.unit=degC#9.fps=0#";
+        public const uint MeterStreamId = 1792u;
         public MockFlexRadio(M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.MockRxMode mode = 1, M0LTE.Flex.MockSetupMode setupMode = 0, string station = "Flex", string sliceLetter = "A") { }
         public System.Collections.Generic.IReadOnlyList<float> CapturedTxSamples { get; }
         public System.Collections.Generic.IReadOnlyList<float> CapturedWaveformIq { get; }
@@ -218,6 +263,9 @@ namespace M0LTE.Flex
         public int UdpPort { get; }
         public void DeliverTxPacket(byte[] packet) { }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public void PushMeters([System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Id",
+                "Raw"})] params System.ValueTuple<int, short>[] meters) { }
         public System.Threading.Tasks.Task ReplayRxAsync(System.ReadOnlyMemory<float> samples, System.Threading.CancellationToken cancellation = default) { }
         public void Start() { }
         public void WriteCapturedTxWav(string path) { }
@@ -261,6 +309,15 @@ namespace M0LTE.Flex
         public ushort InformationClassCode { get; init; }
         public uint Oui { get; init; }
         public ushort PacketClassCode { get; init; }
+    }
+    public readonly struct VitaPacket : System.IEquatable<M0LTE.Flex.VitaPacket>
+    {
+        public VitaPacket(M0LTE.Flex.VitaPreamble Preamble, System.ReadOnlyMemory<byte> Payload) { }
+        public ushort PacketClassCode { get; }
+        public int PacketCount { get; }
+        public System.ReadOnlyMemory<byte> Payload { get; init; }
+        public M0LTE.Flex.VitaPreamble Preamble { get; init; }
+        public uint StreamId { get; }
     }
     public enum VitaPacketType
     {

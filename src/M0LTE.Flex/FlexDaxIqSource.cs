@@ -39,7 +39,7 @@ public sealed class FlexDaxIqSource : IIqSource, IAsyncDisposable
     private readonly uint _streamId;
     private readonly string? _panId;
     private readonly DaxIqStreamBuffer _buffer;
-    private readonly Action<VitaPreamble, byte[]> _onVita;
+    private readonly Action<VitaPacket> _onVita;
     private int _disposed;
 
     private FlexDaxIqSource(
@@ -122,25 +122,19 @@ public sealed class FlexDaxIqSource : IIqSource, IAsyncDisposable
     /// <inheritdoc />
     public int Read(Span<float> interleaved) => _buffer.Read(interleaved);
 
-    private void OnVita(VitaPreamble preamble, byte[] packet)
+    private void OnVita(VitaPacket packet)
     {
-        if (preamble.StreamId != _streamId)
+        if (packet.StreamId != _streamId)
         {
             return;
         }
 
-        int offset = preamble.PayloadOffset;
-        if (offset < 0 || offset >= packet.Length)
-        {
-            return;
-        }
-
-        // Clamp to the bytes actually present rather than trusting the reported length outright — a
-        // DAX-IQ packet carries a 4-byte VITA trailer past the IQ, and the buffer consumes only whole
-        // 8-byte I/Q pairs, so a slightly-long span is harmless while an over-read would throw.
-        int available = packet.Length - offset;
-        int length = preamble.PayloadLength > 0 ? Math.Min(preamble.PayloadLength, available) : available;
-        _buffer.Ingest(preamble.PacketCount, packet.AsSpan(offset, length));
+        // packet.Payload is already the payload — the header is stripped by the dispatcher.
+        // This previously re-applied preamble.PayloadOffset, which silently skipped a second
+        // header (28 bytes = 3.5 complex samples) off the head of every packet. That is not a
+        // multiple of an 8-byte I/Q pair, so it also transposed I and Q and mirrored the
+        // spectrum — invisible in a noise-floor sanity check, which is all this path had.
+        _buffer.Ingest(packet.PacketCount, packet.Payload.Span);
     }
 
     /// <inheritdoc />

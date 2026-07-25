@@ -22,7 +22,7 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
     private readonly uint _streamId;
     private readonly DaxStreamFormat _format;
     private readonly int _packetBuffer;
-    private readonly Action<VitaPreamble, byte[]> _handler;
+    private readonly Action<VitaPacket> _handler;
 
     private readonly object _lock = new();
     private readonly float[]?[] _slots = new float[]?[SlotCount];
@@ -112,19 +112,20 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
         }
     }
 
-    private void OnVitaPacket(VitaPreamble preamble, byte[] payload)
+    private void OnVitaPacket(VitaPacket packet)
     {
-        if (preamble.StreamId != _streamId
-            || preamble.ClassId.PacketClassCode != _format.PacketClassCode)
+        if (packet.StreamId != _streamId
+            || packet.PacketClassCode != _format.PacketClassCode)
         {
             return;
         }
 
         Interlocked.Increment(ref _received);
+        ReadOnlySpan<byte> payload = packet.Payload.Span;
         var samples = new float[payload.Length / _format.BytesPerSample];
         _format.Depacketize(payload, samples);
 
-        int count = preamble.PacketCount & (SlotCount - 1);
+        int count = packet.PacketCount & (SlotCount - 1);
         lock (_lock)
         {
             _slots[count] = samples;

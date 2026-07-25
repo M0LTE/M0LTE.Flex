@@ -93,6 +93,39 @@ public readonly record struct VitaPreamble(
     int PayloadLength);
 
 /// <summary>
+/// A received VITA-49 packet: its parsed <see cref="Preamble"/> and its <see cref="Payload"/>,
+/// already separated.
+/// </summary>
+/// <remarks>
+/// <para>This type exists to make a specific bug impossible. Handlers are given the payload
+/// with the header <b>already stripped</b>, while <see cref="VitaPreamble.PayloadOffset"/>
+/// describes where that payload sat in the original <em>datagram</em> — so applying it again
+/// to the bytes a handler holds skips a second header's worth of data. The failure is silent
+/// and vicious: on a FLEX-6500 meter stream (28-byte preamble) it discards short packets
+/// outright and eats the first seven values of long ones, leaving behind only genuine-looking
+/// data with an unexplained absence in it. It cost a full debugging session against a live
+/// radio, and the same mistake had already been made independently inside this library, so
+/// the fix is to stop handing consumers a raw array plus an offset that must not be combined.</para>
+/// <para>Take the bytes from <see cref="Payload"/> and never index by
+/// <see cref="VitaPreamble.PayloadOffset"/> — that field is for callers of
+/// <see cref="Vita49.TryParsePreamble"/>, who hold a whole datagram.</para>
+/// <para><see cref="Payload"/> is only valid for the duration of the callback.</para>
+/// </remarks>
+/// <param name="Preamble">The parsed packet preamble.</param>
+/// <param name="Payload">The packet's payload, header stripped and trailer excluded.</param>
+public readonly record struct VitaPacket(VitaPreamble Preamble, ReadOnlyMemory<byte> Payload)
+{
+    /// <summary>The packet-class code — the stream-type discriminator.</summary>
+    public ushort PacketClassCode => Preamble.ClassId.PacketClassCode;
+
+    /// <summary>The 32-bit stream identifier (0 when absent).</summary>
+    public uint StreamId => Preamble.StreamId;
+
+    /// <summary>The 4-bit modulo-16 packet counter.</summary>
+    public int PacketCount => Preamble.PacketCount;
+}
+
+/// <summary>
 /// VITA-49 parse and build for the FlexRadio 6000-series API subset the modem path needs
 /// (discovery and DAX audio streams). Big-endian throughout, per the protocol.
 /// </summary>

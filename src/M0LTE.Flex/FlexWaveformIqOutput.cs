@@ -24,7 +24,7 @@ public sealed class FlexWaveformIqOutput : IDisposable
 
     private readonly FlexClient _client;
     private readonly WaveformIqTxBuffer _buffer;
-    private readonly Action<VitaPreamble, byte[]> _onVita;
+    private readonly Action<VitaPacket> _onVita;
     private readonly float[] _reflect = new float[4096];       // scratch for one reflected packet (single event thread)
     private int _packetCount;
     private int _disposed;
@@ -55,18 +55,18 @@ public sealed class FlexWaveformIqOutput : IDisposable
     /// the sample-domain half of PTT release. Unkey after this returns. Returns true if fully drained.</summary>
     public bool Drain(TimeSpan timeout) => _buffer.WaitDrained(timeout);
 
-    private void OnVita(VitaPreamble preamble, byte[] packet)
+    private void OnVita(VitaPacket packet)
     {
         // Reflect only the waveform's TX buffers: the full-bandwidth IF-data class with an odd
         // stream id (even = the waveform RX path; other classes = meter/FFT). Reply with the same
         // stream id the radio addressed us on.
-        if (preamble.ClassId.PacketClassCode != DaxStreamFormat.FullBandwidth.PacketClassCode
-            || (preamble.StreamId & 1) == 0)
+        if (packet.PacketClassCode != DaxStreamFormat.FullBandwidth.PacketClassCode
+            || (packet.StreamId & 1) == 0)
         {
             return;
         }
 
-        int floats = Math.Min(preamble.PayloadLength / 4, _reflect.Length) & ~1;   // whole I/Q pairs
+        int floats = Math.Min(packet.Payload.Length / 4, _reflect.Length) & ~1;   // whole I/Q pairs
         if (floats == 0)
         {
             return;
@@ -74,7 +74,7 @@ public sealed class FlexWaveformIqOutput : IDisposable
 
         Span<float> block = _reflect.AsSpan(0, floats);
         _buffer.TakePacket(block);
-        byte[] reply = DaxStreamFormat.FullBandwidth.BuildPacket(preamble.StreamId, _packetCount, block);
+        byte[] reply = DaxStreamFormat.FullBandwidth.BuildPacket(packet.StreamId, _packetCount, block);
         _packetCount = (_packetCount + 1) & 0x0F;
         _client.SendVita(reply);
         PacketsReflected++;

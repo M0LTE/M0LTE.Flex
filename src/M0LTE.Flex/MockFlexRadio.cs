@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -406,6 +407,14 @@ public sealed class MockFlexRadio : IAsyncDisposable
             _waveformRegistered = false;
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
         }
+        else if (cmd == "meter list")
+        {
+            // The metadata table in the radio's own '#'-separated form, modelled on a real
+            // FLEX-6500 (firmware v1.4.0.0) — including the awkward parts a parser must
+            // survive: a meter name containing both '.' and '+', negative bounds, and
+            // descriptions with spaces in them.
+            await WriteLineAsync($"R{seq}|0|{MeterListReply}").ConfigureAwait(false);
+        }
         else if (cmd == "xmit 1")
         {
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
@@ -430,6 +439,50 @@ public sealed class MockFlexRadio : IAsyncDisposable
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
         }
     }
+
+    /// <summary>The <c>meter list</c> reply the mock serves — a real FLEX-6500's transmit
+    /// meter set, ids and all.</summary>
+    public const string MeterListReply =
+        "meter 1.src=COD-#1.num=1#1.nam=MICPEAK#1.low=-150.0#1.hi=20.0#1.desc=Signal strength of MIC output in CODEC#1.unit=dBFS#1.fps=40#" +
+        "3.src=TX-#3.num=5#3.nam=HWALC#3.low=-150.0#3.hi=20.0#3.desc=Voltage present at the Hardware ALC RCA Plug#3.unit=dBFS#3.fps=20#" +
+        "4.src=RAD#4.num=208#4.nam=+13.8A#4.low=10.5#4.hi=15.0#4.desc=Main radio input voltage before fuse#4.unit=Volts#4.fps=0#" +
+        "6.src=TX-#6.num=1#6.nam=FWDPWR#6.low=0.0#6.hi=53.0#6.desc=RF Power Forward#6.unit=dBm#6.fps=20#" +
+        "7.src=TX-#7.num=2#7.nam=REFPWR#7.low=0.0#7.hi=53.0#7.desc=RF Power Reflected#7.unit=dBm#7.fps=20#" +
+        "8.src=TX-#8.num=3#8.nam=SWR#8.low=1.0#8.hi=999.0#8.desc=RF SWR#8.unit=SWR#8.fps=20#" +
+        "9.src=TX-#9.num=4#9.nam=PATEMP#9.low=0.0#9.hi=120.0#9.desc=PA Temperature#9.unit=degC#9.fps=0#";
+
+    /// <summary>
+    /// Pushes one meter extension packet carrying the given (id, raw) pairs, in the exact
+    /// shape a FLEX-6500 emits: extension-data-with-stream, class id present, <b>both</b>
+    /// timestamp fields set — a 28-byte preamble. That preamble length is the whole point:
+    /// it is what made the double-applied-offset bug bite, so the mock reproduces it rather
+    /// than emitting a convenient header no real radio sends.
+    /// </summary>
+    public void PushMeters(params (int Id, short Raw)[] meters)
+    {
+        ArgumentNullException.ThrowIfNull(meters);
+        var packet = new byte[28 + (4 * meters.Length)];
+        uint header = (3u << 28)          // ExtDataWithStream
+            | 0x08000000u                 // C: class id present
+            | (1u << 22)                  // TSI
+            | (1u << 20)                  // TSF
+            | (uint)(packet.Length / 4);
+        BinaryPrimitives.WriteUInt32BigEndian(packet, header);
+        BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(4), MeterStreamId);
+        BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(8), Vita49.FlexOui);
+        BinaryPrimitives.WriteUInt32BigEndian(
+            packet.AsSpan(12), ((uint)Vita49.FlexInformationClass << 16) | Vita49.MeterClass);
+        for (int i = 0; i < meters.Length; i++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(packet.AsSpan(28 + (4 * i)), (ushort)meters[i].Id);
+            BinaryPrimitives.WriteInt16BigEndian(packet.AsSpan(30 + (4 * i)), meters[i].Raw);
+        }
+
+        DeliverRx(packet);
+    }
+
+    /// <summary>The stream id the mock sends meter packets on (a real 6500 uses 0x00000700).</summary>
+    public const uint MeterStreamId = 0x00000700;
 
     private static string? ParseArg(string command, string key)
     {

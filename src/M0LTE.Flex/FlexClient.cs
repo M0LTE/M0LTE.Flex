@@ -81,9 +81,12 @@ public sealed class FlexClient : IAsyncDisposable
     /// <see cref="InitUdpAsync"/>).</summary>
     public int LocalUdpPort { get; private set; }
 
-    /// <summary>Raised for every VITA-49 packet received on the UDP stream socket. The
-    /// payload array is a per-packet copy; the handler should consume it synchronously.</summary>
-    public event Action<VitaPreamble, byte[]>? VitaPacketReceived;
+    /// <summary>Raised for every VITA-49 packet received on the UDP stream socket.</summary>
+    /// <remarks>The packet's <see cref="VitaPacket.Payload"/> already has the header stripped —
+    /// never index it by <see cref="VitaPreamble.PayloadOffset"/>. It is a per-packet copy that
+    /// is only valid for the duration of the callback, so handlers must consume it
+    /// synchronously.</remarks>
+    public event Action<VitaPacket>? VitaPacketReceived;
 
     /// <summary>Raised for every object-status update (<c>S…</c>).</summary>
     public event Action<FlexStatusUpdate>? StatusUpdated;
@@ -520,11 +523,11 @@ public sealed class FlexClient : IAsyncDisposable
             return;
         }
 
-        Action<VitaPreamble, byte[]>? handler = VitaPacketReceived;
+        Action<VitaPacket>? handler = VitaPacketReceived;
         if (handler is not null)
         {
             byte[] payload = packet.Slice(preamble.PayloadOffset, preamble.PayloadLength).ToArray();
-            handler(preamble, payload);
+            handler(new VitaPacket(preamble, payload));
         }
     }
 
