@@ -177,6 +177,26 @@ band without the dial moving under you. You then own the sideband and filter pro
 The waveform is reflection-driven either way: while keyed, the radio streams TX buffers and
 `FlexWaveformIqOutput` reflects your buffered IQ back for each one.
 
+## DAX audio transmit
+
+`FlexStation` + `FlexAudioOutput` is the sound-card path: real mono audio into an ordinary slice,
+landing above the dial in `DIGU`/`USB` and below it in `DIGL`/`LSB`.
+
+**Measured on a FLEX-6500 (fw 4.1.5, 2026-07-26), two things that are easy to get wrong:**
+
+- **The transmitter must be pointed at DAX** (`transmit set dax=1`). Creating the DAX streams and
+  pushing packets into them is *not* enough — the transmitter has its own audio-source selection
+  which defaults to the mic, and every command in the DAX enable returns `err=0` either way. A 1 kHz
+  tone produced **no modulation at all** until this was sent. `SetUpHeadlessAsync` now does it and
+  reads it back (`TransmitSourceIsDax`); set `SelectDaxAsTransmitSource = false` to decline.
+- **Bandwidth is the transmit filter, not the slice.** An audio sweep was cut at *exactly* 10 kHz
+  with the filter at 10000, and at *exactly* 3 kHz with it at 3000. **DAX is not a ~3 kHz path** — it
+  carries whatever that filter allows, up to the same 10 kHz ceiling the waveform path has. It is a
+  global setting, so the default is to leave it alone and report it on `TransmitFilter`; set
+  `TransmitFilterHighHz` to change it.
+
+Both settings persist after teardown and affect what the radio transmits from thereafter.
+
 ## Testing without a radio
 
 ```csharp

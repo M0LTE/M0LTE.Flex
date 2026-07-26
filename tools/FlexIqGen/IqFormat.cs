@@ -18,6 +18,55 @@ internal static class IqFormatIo
 {
     public static int BytesPerSample(IqFormat format) => format == IqFormat.Cf32 ? 8 : 4;
 
+    /// <summary>
+    /// Drops Q and writes the real channel alone — mono audio, for the DAX path.
+    /// </summary>
+    /// <remarks>
+    /// DAX carries real audio into a slice, not complex baseband. Feeding it interleaved I/Q would
+    /// transmit Q as though it were more audio, at double the intended rate, and sound plausible
+    /// enough to miss. A complex tone at ±f becomes a real tone at |f|; the sign stops meaning
+    /// anything, which is the honest reflection of what a real audio path can carry.
+    /// </remarks>
+    public static void WriteReal(Stream destination, ReadOnlySpan<float> interleavedIq, IqFormat format, Span<byte> scratch)
+    {
+        int pairs = interleavedIq.Length / 2;
+        var mono = new float[pairs];
+        for (int n = 0; n < pairs; n++)
+        {
+            mono[n] = interleavedIq[2 * n];
+        }
+
+        WriteMono(destination, mono, format, scratch);
+    }
+
+    /// <summary>Writes mono samples in the scalar form of <paramref name="format"/> — one value per
+    /// sample rather than two.</summary>
+    public static void WriteMono(Stream destination, ReadOnlySpan<float> mono, IqFormat format, Span<byte> scratch)
+    {
+        int perSample = format == IqFormat.Cf32 ? 4 : 2;
+        int offset = 0;
+        while (offset < mono.Length)
+        {
+            int take = Math.Min(scratch.Length / perSample, mono.Length - offset);
+            for (int i = 0; i < take; i++)
+            {
+                float value = mono[offset + i];
+                if (format == IqFormat.Cf32)
+                {
+                    BinaryPrimitives.WriteSingleLittleEndian(scratch[(i * 4)..], value);
+                }
+                else
+                {
+                    int scaled = (int)Math.Round(Math.Clamp(value, -1f, 1f) * 32767f);
+                    BinaryPrimitives.WriteInt16LittleEndian(scratch[(i * 2)..], (short)scaled);
+                }
+            }
+
+            destination.Write(scratch[..(take * perSample)]);
+            offset += take;
+        }
+    }
+
     /// <summary>Writes interleaved I/Q floats (±1.0 full scale) in <paramref name="format"/>.</summary>
     public static void Write(Stream destination, ReadOnlySpan<float> interleavedIq, IqFormat format, Span<byte> scratch)
     {

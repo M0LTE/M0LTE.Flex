@@ -180,6 +180,12 @@ namespace M0LTE.Flex
         public M0LTE.Flex.FlexResult? HeadlessBindResult { get; }
         public uint RxStreamId { get; }
         public string SliceIndex { get; }
+        [System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Low",
+                "High"})]
+        public System.ValueTuple<int, int>? TransmitFilter { get; }
+        public bool? TransmitSourceIsDax { get; }
+        public string? TransmitSourceWarning { get; }
         public string? TuneWarning { get; }
         public uint TxStreamId { get; }
         public M0LTE.Flex.FlexAudioInput CreateAudioInput(int packetBuffer = 3) { }
@@ -197,10 +203,12 @@ namespace M0LTE.Flex
         public string Frequency { get; init; }
         public int Gain { get; init; }
         public bool Keepalive { get; init; }
+        public bool SelectDaxAsTransmitSource { get; init; }
         public System.TimeSpan SetupTimeout { get; init; }
         public string SliceLetter { get; init; }
         public string SliceMode { get; init; }
         public string Station { get; init; }
+        public int? TransmitFilterHighHz { get; init; }
     }
     public readonly struct FlexStatusUpdate : System.IEquatable<M0LTE.Flex.FlexStatusUpdate>
     {
@@ -287,6 +295,7 @@ namespace M0LTE.Flex
                 "Low",
                 "High"})]
         public System.ValueTuple<int, int> TransmitFilter { get; }
+        public bool TransmitSourceIsDax { get; }
         public int UdpPort { get; }
         public void DeliverTxPacket(byte[] packet) { }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
