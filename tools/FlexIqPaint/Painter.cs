@@ -9,9 +9,11 @@ namespace M0LTE.Flex.Tools.IqPaint;
 /// amplitude-modulated by the pixels above it. Restarting a tone each row would be a phase
 /// discontinuity — a click — and a click is broadband, so it draws a bright line straight across the
 /// picture it is meant to be drawing.</para>
-/// <para>For the waveform IQ path the bins are placed <b>below DC</b>, because that is the only half
-/// a Flex waveform transmits (docs/flex-integration.md §9.5). A picture placed above it keys the
-/// radio and paints nothing.</para>
+/// <para>Output is ordinary complex baseband at the frequencies asked for — <b>not</b> pre-placed
+/// below DC. Which half of the spectrum a Flex waveform actually transmits is the library's problem,
+/// not a picture's: <c>FlexWaveformOptions.OccupiedBandwidthHz</c> derives the slice and shifts the
+/// samples. Baking the radio's sideband quirk into the file would leak it back to every consumer and
+/// tie the file to one transmit path.</para>
 /// </remarks>
 internal static class Painter
 {
@@ -27,12 +29,9 @@ internal static class Painter
         var frequencies = new double[bins];
         for (int k = 0; k < bins; k++)
         {
-            double hz = bins == 1
+            frequencies[k] = bins == 1
                 ? options.LowHz
                 : options.LowHz + ((options.HighHz - options.LowHz) * k / (bins - 1.0));
-
-            // Below DC for IQ, and mirrored so the lowest frequency stays nearest the carrier.
-            frequencies[k] = complex ? -(options.LowHz + options.HighHz - hz) : hz;
         }
 
         // Random start phases. With every tone starting at zero their peaks coincide and the crest

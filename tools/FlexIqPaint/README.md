@@ -10,11 +10,17 @@ flex-dax-tx --radio <ip> --freq 14.100 --rate 48000 --in logo.f32
 
 # Complex IQ for the waveform path, which has room for a lot more detail
 flex-iq-paint logo.png --out logo.cf32 --iq --rate 24000 --lo 300 --hi 9500 --bins 384
-flex-iq-tx --radio <ip> --freq 14.200 --bw 10k --raw --in logo.cf32
+flex-iq-tx --radio <ip> --freq 14.1905 --bw 9500 --reference loweredge --in logo.cf32
 ```
 
-With `--iq` the tones are placed **below DC** — the only half a Flex waveform transmits — so `--lo`
-and `--hi` are distances *below* the carrier.
+The picture is **ordinary complex baseband** at the frequencies you ask for, running upward from
+`--lo`. Which half of the spectrum a Flex waveform actually transmits is the library's problem, not
+the picture's — `flex-iq-tx` derives the slice, shifts the samples and sets the filter.
+
+Note there is **no `--raw`** above. That flag replays a stream verbatim, which is right for a capture
+or for the corpus probes that deliberately test the radio's sideband behaviour, but wrong here: a
+picture pre-placed below DC bakes a quirk of one radio into the file and ties it to one transmit
+path. This tool used to do exactly that, and it leaked the concept straight back out to the caller.
 
 ## Three things that decide whether it is legible
 

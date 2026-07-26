@@ -114,24 +114,25 @@ public sealed class PaintTests
     }
 
     [Fact]
-    public void An_iq_render_puts_the_whole_picture_below_dc()
+    public void An_iq_render_is_ordinary_baseband_not_pre_placed_for_the_radio()
     {
-        // The half above DC is transmitted by no underlying_mode, so a picture placed there keys the
-        // radio and paints nothing. This is the one that would waste a bench session.
+        // The picture sits at the frequencies asked for. Which half of the spectrum a Flex waveform
+        // transmits is the library's problem — baking it in here would leak the radio's sideband
+        // quirk into every file and tie it to one transmit path.
         var options = new PaintOptions { RateHz = 24000, LineMs = 50, LowHz = 1000, HighHz = 4000 };
         float[] iq = Painter.Render(Checkerboard(16, 8), options, complex: true);
 
         iq.Length.Should().Be(2 * 8 * (int)(24000 * 0.050));
 
-        double below = 0;
-        double above = 0;
-        for (double hz = 500; hz <= 5000; hz += 250)
+        double asAsked = 0;
+        double mirrored = 0;
+        for (double hz = 1000; hz <= 4000; hz += 250)
         {
-            below += PowerAt(iq, -hz, options.RateHz, complex: true);
-            above += PowerAt(iq, hz, options.RateHz, complex: true);
+            asAsked += PowerAt(iq, hz, options.RateHz, complex: true);
+            mirrored += PowerAt(iq, -hz, options.RateHz, complex: true);
         }
 
-        above.Should().BeLessThan(below * 0.02, "the picture must sit below DC");
+        asAsked.Should().BeGreaterThan(mirrored * 20, "the picture is where it was asked for");
     }
 
     [Fact]
