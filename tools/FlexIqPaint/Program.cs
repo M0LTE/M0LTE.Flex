@@ -27,7 +27,7 @@ internal static class Program
 
         The picture is ordinary complex baseband at the frequencies you ask for, running upward
         from --lo. Which half of the spectrum the radio actually transmits is the library's
-        problem, not the picture's: flex-iq-tx places the band for you. Note there is no --raw
+        problem, not the picture's: flex-iq-tx places the band for you. Note there is no --direct
         above — that is the escape hatch for replaying a capture verbatim, not the normal path.
 
         OPTIONS

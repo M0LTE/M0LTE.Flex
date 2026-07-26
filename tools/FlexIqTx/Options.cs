@@ -34,11 +34,14 @@ internal sealed record Options
     /// frequency shift.
     /// </summary>
     /// <remarks>
-    /// For a stream that is already positioned for the radio — the test corpus, or a capture being
-    /// replayed verbatim. The caller then owns the consequences: content above DC is not transmitted,
-    /// and the tool warns rather than silently dropping it.
+    /// <para>For a stream already positioned for the radio: a capture being replayed verbatim, or a
+    /// probe that deliberately tests the radio's sideband behaviour rather than using it. The caller
+    /// then owns the consequences — content above DC is not transmitted, and the tool says so rather
+    /// than dropping it silently.</para>
+    /// <para>Named <c>direct</c> rather than <c>raw</c> because <c>RAW</c> is also an
+    /// <c>underlying_mode</c>, and the two have nothing to do with each other.</para>
     /// </remarks>
-    public bool Raw { get; init; }
+    public bool Direct { get; init; }
 
     /// <summary>Read from this file instead of stdin. A SigMF <c>.sigmf-meta</c> sidecar beside it is
     /// picked up automatically, and its datatype and sample rate are believed over the flags.</summary>
@@ -85,7 +88,13 @@ internal sealed record Options
                 case "--ant": options = options with { Antenna = Value() }; break;
                 case "--gain": options = options with { Gain = ParseDouble(Value()) }; break;
                 case "--max-seconds": options = options with { MaxSeconds = ParseDouble(Value()) }; break;
-                case "--raw": options = options with { Raw = true }; break;
+                case "--direct": options = options with { Direct = true }; break;
+
+                // Renamed, and worth saying so: RAW is also an underlying_mode, so the old name
+                // read as though it selected one.
+                case "--raw":
+                    throw new ArgumentException("--raw is now --direct (RAW is also an underlying_mode, "
+                        + "and the two are unrelated)");
                 case "--dry-run": options = options with { DryRun = true }; break;
                 case "--verbose": options = options with { Verbose = true }; break;
                 case "--reference":

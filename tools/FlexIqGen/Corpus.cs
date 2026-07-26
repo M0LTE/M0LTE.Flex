@@ -76,15 +76,15 @@ internal static class Corpus
             no header. Transmit one with:
 
             ```sh
-            flex-iq-tx --radio <ip> --freq 14.200 --bw <width> --raw < tone-minus3k.EXT
+            flex-iq-tx --radio <ip> --freq 14.200 --bw <width> --direct < tone-minus3k.EXT
             ```
 
             Every file is already positioned **below DC** — the only half a Flex waveform transmits —
-            so they are transmitted with **`--raw`**, which sends the samples verbatim at the frequency
+            so they are transmitted with **`--direct`**, which sends the samples verbatim at the frequency
             you name. Expected results below are all relative to that tuned frequency. The one
             exception is `tone-plus3k`, deliberately placed in the half that should stay silent.
 
-            (Without `--raw`, `flex-iq-tx` instead *places* a DC-centred or `0..bw` stream for you —
+            (Without `--direct`, `flex-iq-tx` instead *places* a DC-centred or `0..bw` stream for you —
             that is the path for a modulator's output, not for these pre-positioned files.)
 
             ## Format
