@@ -284,14 +284,18 @@ internal static class Program
                 Name = WaveformName,
                 Mode = WaveformMode,
                 UnderlyingMode = options.UnderlyingMode,
-                Frequency = options.CentreMhz.ToString("F6", CultureInfo.InvariantCulture),
                 Antenna = options.Antenna,
                 TxFilterLowHz = options.TxFilterLowHz,
                 TxFilterHighHz = options.TxFilterHighHz,
                 TransmitFilterLowHz = txLo,
                 TransmitFilterHighHz = txHi,
-                OccupiedBandwidthHz = options.Placed ? (int)Math.Round(options.BandwidthHz) : null,
-                BandReference = options.BandReference,
+
+                // Exactly one of these: place a declared band, or tune the slice and place the IQ
+                // by hand. Which one is in use is now visible here rather than implied.
+                Band = options.Placed
+                    ? new IqBand(options.CentreMhz, (int)Math.Round(options.BandwidthHz), options.BandReference)
+                    : null,
+                SliceFrequencyMhz = options.Placed ? null : options.CentreMhz,
                 RfPower = (int)Math.Round(options.PowerWatts),
             };
 

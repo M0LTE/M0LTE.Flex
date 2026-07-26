@@ -24,7 +24,7 @@ namespace M0LTE.Flex;
 /// half of the baseband is transmitted, in every mode — put the whole signal below DC. Whether it
 /// then lands below the carrier upright (<c>RAW</c>/<c>LSB</c>/<c>DIGL</c>) or above it mirrored
 /// (<c>IQ</c>/<c>USB</c>/<c>DIGU</c>) is the mode's doing;
-/// <see cref="FlexWaveformOptions.OccupiedBandwidthHz">band placement</see> handles it for you.
+/// <see cref="FlexWaveformOptions.Band">band placement</see> handles it for you.
 /// </remarks>
 public sealed class FlexWaveformIqOutput : IDisposable
 {

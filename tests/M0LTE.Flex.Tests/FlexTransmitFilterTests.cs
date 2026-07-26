@@ -14,7 +14,7 @@ public sealed class FlexTransmitFilterTests
         mock.Start();
         await using FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
 
-        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1 });
 
         // Left at the factory 3 kHz, an 8 kHz-wide burst would go out 3 kHz wide with no error.
         mock.TransmitFilter.Should().Be((0, FlexWaveformOptions.MaxTransmitFilterHighHz));
@@ -30,7 +30,7 @@ public sealed class FlexTransmitFilterTests
         await using FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
 
         await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(
-            client, new FlexWaveformOptions { TransmitFilterHighHz = 20000 });
+            client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1, TransmitFilterHighHz = 20000 });
 
         // Silently clamped by the radio — the command still returns err=0, so the read-back is the
         // only way to know the band will be cut.
@@ -47,7 +47,11 @@ public sealed class FlexTransmitFilterTests
         await using FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
 
         await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(
-            client, new FlexWaveformOptions { TransmitFilterLowHz = null, TransmitFilterHighHz = null });
+            client,
+            new FlexWaveformOptions
+            {
+                SliceFrequencyMhz = 14.1, TransmitFilterLowHz = null, TransmitFilterHighHz = null,
+            });
 
         mock.TransmitFilter.Should().Be((0, 3000), "the factory SSB passband must survive untouched");
         waveform.TransmitFilterWarning.Should().BeNull();

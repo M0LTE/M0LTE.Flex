@@ -208,11 +208,15 @@ internal static class Program
                 Name = WaveformName,
                 Mode = WaveformMode,
                 UnderlyingMode = "RAW",
-                Frequency = options.FreqMhz.ToString("F6", CultureInfo.InvariantCulture),
                 Antenna = options.Antenna,
-                OccupiedBandwidthHz = options.Direct ? null : (int)Math.Round(options.BandwidthHz),
-                BandReference = options.Reference,
                 TransmitFilterHighHz = (int)Math.Round(options.BandwidthHz),
+
+                // --direct tunes the slice and sends the samples untouched; otherwise the library
+                // places a band of the declared width.
+                Band = options.Direct
+                    ? null
+                    : new IqBand(options.FreqMhz, (int)Math.Round(options.BandwidthHz), options.Reference),
+                SliceFrequencyMhz = options.Direct ? options.FreqMhz : null,
                 RfPower = (int)Math.Round(options.PowerWatts),
             }).ConfigureAwait(false);
 

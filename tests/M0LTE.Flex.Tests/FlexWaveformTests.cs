@@ -22,7 +22,7 @@ public sealed class FlexWaveformTests
         mock.RxDelivery = client.DeliverVitaPacket;
         client.VitaSendHook = mock.DeliverTxPacket;
 
-        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1 });
         using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
         FlexPtt ptt = waveform.CreatePtt();
 
@@ -108,7 +108,7 @@ public sealed class FlexWaveformTests
         mock.RxDelivery = client.DeliverVitaPacket;
         client.VitaSendHook = mock.DeliverTxPacket;
 
-        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1 });
         using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
         FlexPtt ptt = waveform.CreatePtt();
 
@@ -143,7 +143,7 @@ public sealed class FlexWaveformTests
         mock.RxDelivery = client.DeliverVitaPacket;
         client.VitaSendHook = mock.DeliverTxPacket;
 
-        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1 });
         using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
         FlexPtt ptt = waveform.CreatePtt();
 

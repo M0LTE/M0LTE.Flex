@@ -107,11 +107,9 @@ await using FlexClient client = await FlexClient.ConnectAsync("192.168.1.50");
 
 await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
 {
-    Frequency           = "14.200000",   // where the signal goes…
-    OccupiedBandwidthHz = 3000,          // …and how wide it is
-    BandReference       = IqBandReference.LowerEdge,
-    UnderlyingMode      = "RAW",
-    RfPower             = 5,
+    // Where the signal goes, how wide it is, and which convention you write in.
+    Band     = new IqBand(14.200000, 3000, IqBandReference.LowerEdge),
+    RfPower  = 5,
 });
 
 using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
@@ -125,9 +123,9 @@ ptt.Unkey();
 // On air: 14.200000 – 14.203000 MHz, spectrum upright.
 ```
 
-`BandReference` names the convention you write in, and is the only thing you have to decide:
+`IqBand`'s reference names the convention you write in, and is the only thing you have to decide:
 
-| `BandReference` | You supply | `Frequency` means |
+| `IqBandReference` | You supply | `FrequencyMhz` means |
 |---|---|---|
 | `Centre` (default) | DC-centred baseband, `−bw/2 … +bw/2` — the usual SDR convention (GNU Radio, SoapySDR, UHD, SigMF) | the **centre** of the band |
 | `LowerEdge` | one-sided baseband, `0 … +bw` | the **lower edge** of the band |
@@ -170,9 +168,13 @@ perfect on a spectrum analyser and decode nowhere.
 
 ### Placing the IQ yourself
 
-Leave `OccupiedBandwidthHz` unset and `Frequency` is simply the slice frequency, with your samples
-going out untouched — the low-level behaviour, for when you want to move a signal around within the
-band without the dial moving under you. You then own the sideband and filter problems above.
+Set `SliceFrequencyMhz` instead of `Band` and the slice tunes there with your samples going out
+untouched — for replaying a capture verbatim, or moving a signal around within the band without the
+dial shifting under you. You then own the sideband and filter problems above.
+
+The two are **mutually exclusive and exactly one must be set**: which mode you are in is visible at
+the call site rather than implied by whether some other property happens to be filled in, and there
+is no default transmit frequency to be surprised by.
 
 The waveform is reflection-driven either way: while keyed, the radio streams TX buffers and
 `FlexWaveformIqOutput` reflects your buffered IQ back for each one.
