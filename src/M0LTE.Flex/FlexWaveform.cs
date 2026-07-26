@@ -14,7 +14,7 @@ namespace M0LTE.Flex;
 /// <see cref="MaxTransmitFilterHighHz"/>. Only the <b>negative</b> half of the baseband is
 /// transmitted, in every mode, so place the whole signal below DC and leave the transmit filter
 /// wide — otherwise the band is silently truncated or lost. Setting
-/// <see cref="OccupiedBandwidthHz"/> hands all of that to the library.
+/// <see cref="Band"/> hands all of that to the library.
 /// </remarks>
 public sealed record FlexWaveformOptions
 {
@@ -36,7 +36,7 @@ public sealed record FlexWaveformOptions
     /// <list type="bullet">
     ///   <item><c>RAW</c>, <c>LSB</c>, <c>DIGL</c> — a component at <c>−f</c> is transmitted at
     ///   <c>slice − f</c>. Spectrum <b>upright</b>. Of these,
-    ///   <see cref="OccupiedBandwidthHz">band placement</see> uses <c>RAW</c> only: the other two are
+    ///   <see cref="Band">band placement</see> uses <c>RAW</c> only: the other two are
     ///   full audio modes carrying processing that a tone check would not reveal.</item>
     ///   <item><c>IQ</c>, <c>USB</c>, <c>DIGU</c> — a component at <c>−f</c> is transmitted at
     ///   <c>slice + f</c>. Spectrum <b>mirrored</b>, so a modulated signal goes out inverted.</item>
@@ -46,39 +46,33 @@ public sealed record FlexWaveformOptions
     public string UnderlyingMode { get; init; } = "RAW";
 
     /// <summary>
-    /// The signal's frequency in MHz (six-decimal Flex form). Default "14.100000".
+    /// Tune the slice here (MHz) and transmit the caller's samples <b>untouched</b>. Mutually
+    /// exclusive with <see cref="Band"/>; exactly one must be set.
     /// </summary>
     /// <remarks>
-    /// With <see cref="OccupiedBandwidthHz"/> unset this is the <b>slice</b> frequency and the caller
-    /// places its own IQ relative to it — the low-level behaviour. With a bandwidth set, this instead
-    /// names the signal's <b>centre</b> or <b>lower edge</b> (per <see cref="BandReference"/>) and the
-    /// slice frequency is derived; read the result from <see cref="FlexWaveform.SliceFrequencyMhz"/>.
+    /// The low-level path: the caller owns where its signal lands relative to this frequency, and
+    /// with it the consequences — only content below DC is transmitted, and the transmit filter
+    /// truncates whatever is left. Use it to replay a capture verbatim, or to probe the radio's own
+    /// behaviour. For ordinary use, <see cref="Band"/> handles all of that.
     /// </remarks>
-    public string Frequency { get; init; } = "14.100000";
+    public double? SliceFrequencyMhz { get; init; }
 
     /// <summary>
-    /// Width of the signal the caller will transmit, in Hz. Setting this switches the waveform into
-    /// <b>band placement</b>: say where the signal goes and how wide it is, and the library works out
-    /// the rest. Null (the default) keeps the low-level behaviour, where <see cref="Frequency"/> is
-    /// the slice frequency and the caller places its own IQ.
+    /// Place a signal of a declared width at a declared frequency. Mutually exclusive with
+    /// <see cref="SliceFrequencyMhz"/>; exactly one must be set.
     /// </summary>
     /// <remarks>
-    /// <para>Band placement exists because the raw path has three traps that all report success:
-    /// the transmit path is single-sideband so half a carrier-straddling signal vanishes; which half
-    /// survives depends on <see cref="UnderlyingMode"/>; and the transmit filter silently truncates
-    /// the rest. With a bandwidth set, the library picks the slice frequency, frequency-shifts the
-    /// samples into the half that reaches the air <b>without mirroring them</b>, and opens the transmit filter
-    /// far enough — or fails setup if the radio cannot honour the request.</para>
-    /// <para>The achievable maximum is the radio's transmit filter ceiling — about
-    /// <see cref="MaxTransmitFilterHighHz"/> Hz on a 6500.</para>
+    /// <para>Say where the signal goes and how wide it is, and the library derives the slice
+    /// frequency, frequency-shifts the samples into the half the radio actually transmits — without
+    /// mirroring them — opens the transmit filter far enough, and throws rather than putting a
+    /// truncated signal on air.</para>
+    /// <para>Note the slice ends up on a <i>different</i> frequency from the one named here, since
+    /// the signal sits below it. Read <see cref="FlexWaveform.SliceFrequencyMhz"/> for where it
+    /// actually went.</para>
     /// </remarks>
-    public int? OccupiedBandwidthHz { get; init; }
+    public IqBand? Band { get; init; }
 
-    /// <summary>What <see cref="Frequency"/> refers to, and where the caller's DC sits. Default
-    /// <see cref="IqBandReference.Centre"/>. Only used with <see cref="OccupiedBandwidthHz"/>.</summary>
-    public IqBandReference BandReference { get; init; } = IqBandReference.Centre;
-
-    /// <summary>RX/TX antenna port. Default "ANT1".</summary>
+    /// <summary>Antenna port used for both receive and transmit. Default "ANT1".</summary>
     public string Antenna { get; init; } = "ANT1";
 
     /// <summary>The waveform's own TX filter low cut (Hz), sent as
@@ -103,13 +97,13 @@ public sealed record FlexWaveformOptions
     /// <summary>
     /// High cut of the radio's transmit filter (Hz from the carrier), applied with
     /// <c>transmit set filter_high=</c>. Null leaves the radio's current setting. Default
-    /// <see cref="MaxTransmitFilterHighHz"/>.
+    /// <see cref="MaxTransmitFilterHighHz"/>. Ignored when <see cref="Band"/> is set, which sizes the
+    /// filter from the declared bandwidth instead.
     /// </summary>
     /// <remarks>
     /// <para><b>This is the setting that caps occupied bandwidth.</b> The radio's factory value is a
     /// 3 kHz SSB passband, so a waveform client that does not raise it transmits 3 kHz however wide
-    /// its IQ is — silently, with every command returning <c>err=0</c>. Hence the default here is the
-    /// maximum rather than "leave alone".</para>
+    /// its IQ is — silently, with every command returning <c>err=0</c>.</para>
     /// <para>Note the read/write asymmetry: the value is <i>reported</i> on the <c>transmit</c>
     /// object as <c>lo</c>/<c>hi</c>, but <c>transmit set hi=</c> is rejected (<c>0x5000002D</c>) —
     /// it must be set with <c>filter_low=</c>/<c>filter_high=</c>. Values above
@@ -210,8 +204,10 @@ public sealed class FlexWaveform : IAsyncDisposable
     /// decode nowhere.
     /// </remarks>
     private static (double SliceMhz, double ShiftHz, double LowMhz, double HighMhz) PlaceBand(
-        FlexWaveformOptions options, double referenceMhz, int bandwidthHz)
+        FlexWaveformOptions options, IqBand band)
     {
+        double referenceMhz = band.FrequencyMhz;
+        int bandwidthHz = band.BandwidthHz;
         SidebandMapping mapping = MappingFor(options.UnderlyingMode);
 
         if (mapping == SidebandMapping.Unsupported)
@@ -244,12 +240,12 @@ public sealed class FlexWaveform : IAsyncDisposable
         }
 
         double widthMhz = bandwidthHz / 1e6;
-        (double lowMhz, double highMhz) = options.BandReference == IqBandReference.Centre
+        (double lowMhz, double highMhz) = band.Reference == IqBandReference.Centre
             ? (referenceMhz - (widthMhz / 2), referenceMhz + (widthMhz / 2))
             : (referenceMhz, referenceMhz + widthMhz);
 
         // Where the caller's samples start, relative to their own DC.
-        double callerLowHz = options.BandReference == IqBandReference.Centre ? -bandwidthHz / 2.0 : 0;
+        double callerLowHz = band.Reference == IqBandReference.Centre ? -bandwidthHz / 2.0 : 0;
 
         // Only negative baseband reaches the air, and here RF = slice + baseband. Anchor the slice at
         // the TOP of the band (baseband zero) and shift the caller's span down below it.
@@ -349,7 +345,7 @@ public sealed class FlexWaveform : IAsyncDisposable
     private async Task ApplyTransmitFilterAsync(CancellationToken cancellation)
     {
         // Band placement knows exactly how far the signal reaches, so it sets the filter itself.
-        int? wantHighHz = _options.OccupiedBandwidthHz ?? _options.TransmitFilterHighHz;
+        int? wantHighHz = _options.Band?.BandwidthHz ?? _options.TransmitFilterHighHz;
 
         if (_options.TransmitFilterLowHz is null && wantHighHz is null)
         {
@@ -381,7 +377,7 @@ public sealed class FlexWaveform : IAsyncDisposable
 
         // A band the radio cannot pass is a hard failure: transmitting it anyway would put a
         // silently truncated signal on air, which looks exactly like success.
-        if (_options.OccupiedBandwidthHz is int needed
+        if (_options.Band?.BandwidthHz is int needed
             && applied is (int _, int achievable)
             && achievable < needed)
         {
@@ -454,25 +450,36 @@ public sealed class FlexWaveform : IAsyncDisposable
     /// low-level behaviour alone when no bandwidth was requested.</summary>
     private void ResolvePlacement()
     {
-        if (!double.TryParse(_options.Frequency, NumberStyles.Float, CultureInfo.InvariantCulture, out double referenceMhz))
+        // Exactly one of the two. Checked here rather than left to a default, because "which mode am
+        // I in" being implied by whether some other property happens to be set is the confusion this
+        // API shape exists to remove.
+        if (_options.Band is null && _options.SliceFrequencyMhz is null)
         {
-            SliceFrequencyMhz = 0;
+            throw new FlexProtocolException(
+                "set either SliceFrequencyMhz (tune here, samples sent untouched) or Band (place a "
+                + "signal of a declared width at a declared frequency)");
+        }
+
+        if (_options.Band is not null && _options.SliceFrequencyMhz is not null)
+        {
+            throw new FlexProtocolException(
+                "SliceFrequencyMhz and Band are mutually exclusive — Band derives the slice frequency "
+                + "itself, so setting both cannot be honoured");
+        }
+
+        if (_options.Band is not IqBand band)
+        {
+            SliceFrequencyMhz = _options.SliceFrequencyMhz!.Value;
             return;
         }
 
-        if (_options.OccupiedBandwidthHz is not int bandwidth)
+        if (band.BandwidthHz <= 0)
         {
-            SliceFrequencyMhz = referenceMhz;              // Frequency IS the slice, as before
-            return;
-        }
-
-        if (bandwidth <= 0)
-        {
-            throw new FlexProtocolException($"OccupiedBandwidthHz must be positive (got {bandwidth})");
+            throw new FlexProtocolException($"IqBand.BandwidthHz must be positive (got {band.BandwidthHz})");
         }
 
         (double sliceMhz, double shiftHz, double lowMhz, double highMhz) =
-            PlaceBand(_options, referenceMhz, bandwidth);
+            PlaceBand(_options, band);
 
         SliceFrequencyMhz = sliceMhz;
         BasebandShiftHz = shiftHz;
@@ -481,9 +488,8 @@ public sealed class FlexWaveform : IAsyncDisposable
 
     /// <summary>The frequency the slice is actually tuned to — the placed one when band placement is
     /// in use, else the requested one.</summary>
-    private string SliceTuneFrequency => SliceFrequencyMhz > 0
-        ? SliceFrequencyMhz.ToString("F6", CultureInfo.InvariantCulture)
-        : _options.Frequency;
+    private string SliceTuneFrequency =>
+        SliceFrequencyMhz.ToString("F6", CultureInfo.InvariantCulture);
 
     private async Task CreateSliceAsync(CancellationToken cancellation)
     {
@@ -503,11 +509,7 @@ public sealed class FlexWaveform : IAsyncDisposable
     // disable persistence, activate, explicit `slice t`, then verify RF_frequency converged.
     private async Task EnsureTunedAsync(CancellationToken cancellation)
     {
-        if (!double.TryParse(SliceTuneFrequency, NumberStyles.Float, CultureInfo.InvariantCulture, out double wantMhz))
-        {
-            TuneWarning = $"headless tune skipped: '{_options.Frequency}' is not a numeric MHz value";
-            return;
-        }
+        double wantMhz = SliceFrequencyMhz;
 
         await TryBestEffortAsync("radio set band_persistence_enabled=0", cancellation).ConfigureAwait(false);
         await TryBestEffortAsync($"slice set {SliceIndex} active=1", cancellation).ConfigureAwait(false);

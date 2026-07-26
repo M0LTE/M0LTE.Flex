@@ -256,13 +256,12 @@ namespace M0LTE.Flex
         public const int MaxTransmitFilterHighHz = 10000;
         public FlexWaveformOptions() { }
         public string Antenna { get; init; }
-        public M0LTE.Flex.IqBandReference BandReference { get; init; }
-        public string Frequency { get; init; }
+        public M0LTE.Flex.IqBand? Band { get; init; }
         public string Mode { get; init; }
         public string Name { get; init; }
-        public int? OccupiedBandwidthHz { get; init; }
         public int? RfPower { get; init; }
         public System.TimeSpan SetupTimeout { get; init; }
+        public double? SliceFrequencyMhz { get; init; }
         public int? TransmitFilterHighHz { get; init; }
         public int? TransmitFilterLowHz { get; init; }
         public int TxFilterHighHz { get; init; }
@@ -274,6 +273,13 @@ namespace M0LTE.Flex
         double CentreFrequencyHz { get; }
         int SampleRate { get; }
         int Read(System.Span<float> interleaved);
+    }
+    public sealed class IqBand : System.IEquatable<M0LTE.Flex.IqBand>
+    {
+        public IqBand(double FrequencyMhz, int BandwidthHz, M0LTE.Flex.IqBandReference Reference = 0) { }
+        public int BandwidthHz { get; init; }
+        public double FrequencyMhz { get; init; }
+        public M0LTE.Flex.IqBandReference Reference { get; init; }
     }
     public enum IqBandReference
     {

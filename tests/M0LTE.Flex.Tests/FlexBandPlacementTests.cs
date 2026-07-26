@@ -29,9 +29,7 @@ public sealed class FlexBandPlacementTests
         {
             await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = requestMhz.ToString("F6", System.Globalization.CultureInfo.InvariantCulture),
-                OccupiedBandwidthHz = 3000,
-                BandReference = reference,
+                Band = new IqBand(requestMhz, 3000, reference),
                 UnderlyingMode = mode,
             });
 
@@ -54,7 +52,7 @@ public sealed class FlexBandPlacementTests
         {
             await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.200000", OccupiedBandwidthHz = 8000, UnderlyingMode = "RAW",
+                Band = new IqBand(14.200000, 8000), UnderlyingMode = "RAW",
             });
 
             mock.TransmitFilter.High.Should().Be(8000, "the factory 3 kHz filter would truncate it");
@@ -71,7 +69,7 @@ public sealed class FlexBandPlacementTests
             // Silently sending 10 kHz of a 15 kHz request is indistinguishable from success.
             Func<Task> setUp = async () => await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.200000", OccupiedBandwidthHz = 15000, UnderlyingMode = "RAW",
+                Band = new IqBand(14.200000, 15000), UnderlyingMode = "RAW",
             });
 
             await setUp.Should().ThrowAsync<FlexProtocolException>().WithMessage("*truncated*");
@@ -92,7 +90,7 @@ public sealed class FlexBandPlacementTests
             // path beats one verified and two plausible ones.
             Func<Task> setUp = async () => await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.200000", OccupiedBandwidthHz = 3000, UnderlyingMode = mode,
+                Band = new IqBand(14.200000, 3000), UnderlyingMode = mode,
             });
 
             await setUp.Should().ThrowAsync<FlexProtocolException>().WithMessage("*underlying_mode=RAW*");
@@ -114,7 +112,7 @@ public sealed class FlexBandPlacementTests
             // reach the same frequencies, so there is nothing to gain by allowing it.
             Func<Task> setUp = async () => await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.200000", OccupiedBandwidthHz = 3000, UnderlyingMode = mode,
+                Band = new IqBand(14.200000, 3000), UnderlyingMode = mode,
             });
 
             await setUp.Should().ThrowAsync<FlexProtocolException>().WithMessage("*mirrored*");
@@ -130,10 +128,42 @@ public sealed class FlexBandPlacementTests
         {
             Func<Task> setUp = async () => await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.200000", OccupiedBandwidthHz = 3000, UnderlyingMode = "AM",
+                Band = new IqBand(14.200000, 3000), UnderlyingMode = "AM",
             });
 
             await setUp.Should().ThrowAsync<FlexProtocolException>().WithMessage("*discard*");
+        }
+    }
+
+    [Fact]
+    public async Task Naming_neither_a_slice_nor_a_band_is_refused_rather_than_defaulted()
+    {
+        // A transmit frequency is not something to guess at, and "which mode am I in" should not be
+        // implied by whether some other property happens to be set.
+        (MockFlexRadio mock, FlexClient client) = await ConnectAsync();
+        await using (mock)
+        await using (client)
+        {
+            Func<Task> setUp = async () =>
+                await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions());
+
+            await setUp.Should().ThrowAsync<FlexProtocolException>().WithMessage("*either*");
+        }
+    }
+
+    [Fact]
+    public async Task Naming_both_a_slice_and_a_band_is_refused_because_they_contradict()
+    {
+        (MockFlexRadio mock, FlexClient client) = await ConnectAsync();
+        await using (mock)
+        await using (client)
+        {
+            // Band derives the slice frequency itself, so an explicit one cannot also be honoured.
+            Func<Task> setUp = async () => await FlexWaveform.SetUpHeadlessAsync(
+                client,
+                new FlexWaveformOptions { SliceFrequencyMhz = 14.2, Band = new IqBand(14.2, 3000) });
+
+            await setUp.Should().ThrowAsync<FlexProtocolException>().WithMessage("*mutually exclusive*");
         }
     }
 
@@ -145,7 +175,7 @@ public sealed class FlexBandPlacementTests
         await using (client)
         {
             await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(
-                client, new FlexWaveformOptions { Frequency = "14.200000" });
+                client, new FlexWaveformOptions { SliceFrequencyMhz = 14.200000 });
 
             // The low-level path the explore rig depends on: no shift, no derived slice.
             waveform.SliceFrequencyMhz.Should().BeApproximately(14.2, 1e-9);

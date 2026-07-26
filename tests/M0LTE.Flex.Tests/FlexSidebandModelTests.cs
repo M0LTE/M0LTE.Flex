@@ -33,7 +33,7 @@ public sealed class FlexSidebandModelTests
                     client,
                     new FlexWaveformOptions
                     {
-                        Frequency = "14.200000", OccupiedBandwidthHz = 3000, UnderlyingMode = mode,
+                        Band = new IqBand(14.200000, 3000), UnderlyingMode = mode,
                     });
                 return null;
             }
@@ -97,9 +97,7 @@ public sealed class FlexSidebandModelTests
         {
             await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.200000",
-                OccupiedBandwidthHz = 4000,
-                BandReference = IqBandReference.Centre,
+                Band = new IqBand(14.200000, 4000, IqBandReference.Centre),
             });
 
             // Caller writes -2000..+2000; a -4000 Hz shift lands it on -4000..0, entirely below DC.
@@ -120,9 +118,7 @@ public sealed class FlexSidebandModelTests
         {
             await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
             {
-                Frequency = "14.190000",
-                OccupiedBandwidthHz = 10000,
-                BandReference = IqBandReference.LowerEdge,
+                Band = new IqBand(14.190000, 10000, IqBandReference.LowerEdge),
             });
 
             // RF = slice + baseband and baseband is negative, so the slice sits at the TOP.
