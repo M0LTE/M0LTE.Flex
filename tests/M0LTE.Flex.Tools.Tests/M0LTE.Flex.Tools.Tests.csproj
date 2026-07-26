@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../tools/FlexIqGen/FlexIqGen.csproj" />
+    <ProjectReference Include="../../tools/FlexIqNoise/FlexIqNoise.csproj" />
+    <ProjectReference Include="../../tools/FlexIqTx/FlexIqTx.csproj" />
+  </ItemGroup>
+
+</Project>

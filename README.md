@@ -93,33 +93,89 @@ Console.WriteLine($"{iq.PacketsReceived} packets, {iq.PacketsLost} lost");
 `FlexDaxIqSource` implements `IIqSource` (`SampleRate` / `CentreFrequencyHz` / `Read`), so a
 digital-downconverter front end can fan it into several narrowband channels.
 
-## Wideband IQ transmit (Waveform API)
+## IQ transmit (Waveform API)
 
-Transmit arbitrary complex IQ through a custom waveform — the only way to put wideband IQ on air
-on a 6000-series radio. `underlying_mode=RAW` carries both sidebands (true wideband complex);
-`USB`/`IQ` are single-sideband.
+Transmit arbitrary complex IQ through a custom waveform — the only way to put IQ on air on a
+6000-series radio.
+
+**Say where the signal goes and how wide it is, and the library places it:**
 
 ```csharp
 using M0LTE.Flex;
 
 await using FlexClient client = await FlexClient.ConnectAsync("192.168.1.50");
 
-await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(
-    client,
-    new FlexWaveformOptions { Frequency = "14.100000", Antenna = "ANT1", UnderlyingMode = "RAW", RfPower = 10 });
+await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions
+{
+    Frequency           = "14.200000",   // where the signal goes…
+    OccupiedBandwidthHz = 3000,          // …and how wide it is
+    BandReference       = IqBandReference.LowerEdge,
+    UnderlyingMode      = "RAW",
+    RfPower             = 5,
+});
 
 using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
 FlexPtt ptt = waveform.CreatePtt(confirmInterlock: true);
 
 ptt.Key();                               // the radio starts pulling TX buffers from us
-iq.Write(myComplexIq);                   // interleaved I, Q at FlexWaveformIqOutput.SampleRate (24 kHz)
-iq.Drain(TimeSpan.FromSeconds(5));       // block until the burst has gone out…
-ptt.Unkey();                             // …then release
+iq.Write(myComplexIq);                   // your baseband, 0 … +3000 Hz, at iq.SampleRate (24 kHz)
+iq.Drain(TimeSpan.FromSeconds(5));
+ptt.Unkey();
+
+// On air: 14.200000 – 14.203000 MHz, spectrum upright.
 ```
 
-The waveform is reflection-driven: while keyed, the radio streams TX buffers and
-`FlexWaveformIqOutput` reflects your buffered IQ back for each one. Bandwidth is capped by the
-24 kHz waveform rate (±12 kHz).
+`BandReference` names the convention you write in, and is the only thing you have to decide:
+
+| `BandReference` | You supply | `Frequency` means |
+|---|---|---|
+| `Centre` (default) | DC-centred baseband, `−bw/2 … +bw/2` — the usual SDR convention (GNU Radio, SoapySDR, UHD, SigMF) | the **centre** of the band |
+| `LowerEdge` | one-sided baseband, `0 … +bw` | the **lower edge** of the band |
+
+The library then works out everything the radio makes awkward, and reports what it did on
+`SliceFrequencyMhz`, `BasebandShiftHz`, `OccupiedBand` and `TransmitFilter`.
+
+### Why that is worth having
+
+Three properties of the transmit path all report `err=0` and are invisible without an external
+receiver (measured on a FLEX-6500, firmware 4.1.5, 2026-07-26):
+
+- **It is single-sideband, and only the negative half survives.** Every `underlying_mode` transmits
+  only the **negative** half of your baseband — positive-frequency content never reaches the air.
+  What differs is which side of the carrier it lands on, and hence whether your spectrum arrives
+  upright: `RAW`/`LSB`/`DIGL` place `−f` at `slice − f` (**upright**), while `IQ`/`USB`/`DIGU` place
+  it at `slice + f` (**mirrored**). `AM`/`FM` discard Q entirely. A band left straddling the carrier
+  loses half its width.
+- **The transmit filter caps the rest.** It defaults to a 3 kHz SSB passband and clamps at 10 kHz, so
+  the usable width is about **10 kHz one-sided**. It is set with `filter_low=`/`filter_high=` but
+  *reported* as `lo`/`hi` — `transmit set hi=` is rejected. It is also a **global** radio setting that
+  persists and affects ordinary SSB (factory value 0–3000 Hz).
+- **The waveform's own `tx_filter` does nothing.** `TxFilterLowHz`/`TxFilterHighHz` are accepted with
+  `err=0` and have no measurable effect on this firmware.
+- **The rate is fixed at 24 kHz complex and cannot be raised.** The firmware's own usage string for
+  `waveform set` enumerates every parameter it takes — `rx_filter|tx_filter|tx|logging|udpport` — and
+  no rate is among them; `slice set <n> sample_rate=` is accepted with `err=0` and ignored, the slice
+  still reporting `sample_rate=24000`. The measured cadence agrees: 128 complex samples pulled 187.5
+  times a second, exactly 24 kSPS. It costs nothing, because the ~10 kHz transmit filter is the real
+  limit and sits well inside the ±12 kHz that 24 kHz already gives. **Receive is a different path** —
+  DAX-IQ runs at 24/48/96/192 kSPS and `FlexDaxIqSource` supports all four.
+
+Band placement absorbs all three: it derives the slice frequency, frequency-shifts your samples into
+the sideband that actually transmits, opens the transmit filter far enough, and **fails setup** rather
+than putting a truncated signal on air if the radio cannot honour the width.
+
+The shift is a true frequency translation, never a spectral mirror. Conjugating would land a one-sided
+baseband on the other sideband just as neatly, and invert it — so a QPSK or OFDM signal would look
+perfect on a spectrum analyser and decode nowhere.
+
+### Placing the IQ yourself
+
+Leave `OccupiedBandwidthHz` unset and `Frequency` is simply the slice frequency, with your samples
+going out untouched — the low-level behaviour, for when you want to move a signal around within the
+band without the dial moving under you. You then own the sideband and filter problems above.
+
+The waveform is reflection-driven either way: while keyed, the radio streams TX buffers and
+`FlexWaveformIqOutput` reflects your buffered IQ back for each one.
 
 ## Testing without a radio
 
