@@ -12,3 +12,8 @@ artifacts/
 
 # Coverage output from `dotnet test --collect:"XPlat Code Coverage"`
 TestResults/
+
+# Painted waterfall images and other generated sample signals — regenerate with flex-iq-paint
+*.f32
+*.cf32
+*.cs16
