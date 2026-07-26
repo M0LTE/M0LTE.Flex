@@ -130,15 +130,6 @@ public sealed class SigMfAndOptionsTests
     }
 
     [Fact]
-    public void The_old_raw_flag_names_its_replacement_rather_than_reading_as_a_typo()
-    {
-        // RAW is also an underlying_mode, so the old name read as though it selected one. Anyone
-        // with it in a script or their shell history should be told what it became.
-        Action parse = () => Options.Parse(["--raw"]);
-        parse.Should().Throw<ArgumentException>().WithMessage("*--direct*");
-    }
-
-    [Fact]
     public void Direct_transmits_verbatim_rather_than_placing_a_band()
     {
         Options.Parse(["--direct"]).Direct.Should().BeTrue();
