@@ -38,8 +38,8 @@ internal sealed record Options
     /// probe that deliberately tests the radio's sideband behaviour rather than using it. The caller
     /// then owns the consequences — content above DC is not transmitted, and the tool says so rather
     /// than dropping it silently.</para>
-    /// <para>Named <c>direct</c> rather than <c>raw</c> because <c>RAW</c> is also an
-    /// <c>underlying_mode</c>, and the two have nothing to do with each other.</para>
+    /// <para>Deliberately not called <c>raw</c>: <c>RAW</c> is also an <c>underlying_mode</c>, and
+    /// the two have nothing to do with each other.</para>
     /// </remarks>
     public bool Direct { get; init; }
 
@@ -89,12 +89,6 @@ internal sealed record Options
                 case "--gain": options = options with { Gain = ParseDouble(Value()) }; break;
                 case "--max-seconds": options = options with { MaxSeconds = ParseDouble(Value()) }; break;
                 case "--direct": options = options with { Direct = true }; break;
-
-                // Renamed, and worth saying so: RAW is also an underlying_mode, so the old name
-                // read as though it selected one.
-                case "--raw":
-                    throw new ArgumentException("--raw is now --direct (RAW is also an underlying_mode, "
-                        + "and the two are unrelated)");
                 case "--dry-run": options = options with { DryRun = true }; break;
                 case "--verbose": options = options with { Verbose = true }; break;
                 case "--reference":
