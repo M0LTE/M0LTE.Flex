@@ -9,6 +9,7 @@
   <Folder Name="/tools/">
     <Project Path="tools/FlexDaxTx/FlexDaxTx.csproj" />
     <Project Path="tools/FlexIqGen/FlexIqGen.csproj" />
+    <Project Path="tools/FlexIqPaint/FlexIqPaint.csproj" />
     <Project Path="tools/FlexIqNoise/FlexIqNoise.csproj" />
     <Project Path="tools/FlexIqTx/FlexIqTx.csproj" />
   </Folder>

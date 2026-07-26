@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>flex-iq-paint</AssemblyName>
+    <RootNamespace>M0LTE.Flex.Tools.IqPaint</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.Flex.Tools.Tests" />
+  </ItemGroup>
+
+</Project>
