@@ -4,7 +4,7 @@ namespace M0LTE.Flex;
 /// The transmit sink for a FlexRadio <b>waveform</b>: complex baseband (interleaved <c>I, Q</c>)
 /// written here is transmitted as RF via the Waveform API. Present it the modulator's IQ with
 /// <see cref="Write"/> and release with <see cref="Drain"/> — the transmit counterpart to
-/// <see cref="FlexAudioOutput"/> for wideband IQ (docs/flex-integration.md §9.2/§9.5).
+/// <see cref="FlexAudioOutput"/> for complex IQ (docs/flex-integration.md §9.2/§9.5).
 /// </summary>
 /// <remarks>
 /// A waveform is <b>reflection-driven</b>: while keyed, the radio streams TX buffers (the
@@ -13,9 +13,18 @@ namespace M0LTE.Flex;
 /// <see cref="FlexClient.VitaPacketReceived"/> and, for each TX request, reflects the next
 /// <see cref="WaveformIqTxBuffer">buffered</see> IQ (zero-padded on a starve) using the same stream
 /// id, packetized big-endian as the full-bandwidth stereo class (<see cref="DaxStreamFormat.FullBandwidth"/>).
-/// RX buffers (even stream id) and other streams (meter/FFT) are ignored. The achievable on-air
-/// bandwidth depends on the waveform's <c>underlying_mode</c> — <c>RAW</c> gives true wideband
-/// complex IQ→RF, capped by the 24 kHz waveform rate (§9.5).
+/// RX buffers (even stream id) and other streams (meter/FFT) are ignored.
+/// </remarks>
+/// <remarks>
+/// <b>Achievable on-air bandwidth</b> (measured, FLEX-6500 fw 4.1.5, 2026-07-26): the transmit path
+/// is <b>single-sideband</b> — only the <b>negative</b> half of the baseband is transmitted, in every
+/// <c>underlying_mode</c> — and the surviving half is capped by the radio's transmit filter
+/// (<see cref="FlexWaveformOptions.TransmitFilterHighHz"/>), which defaults to 3 kHz and clamps at
+/// 10 kHz. So the usable width is about <b>10 kHz one-sided</b>, not ±12 kHz. Only the <b>negative</b>
+/// half of the baseband is transmitted, in every mode — put the whole signal below DC. Whether it
+/// then lands below the carrier upright (<c>RAW</c>/<c>LSB</c>/<c>DIGL</c>) or above it mirrored
+/// (<c>IQ</c>/<c>USB</c>/<c>DIGU</c>) is the mode's doing;
+/// <see cref="FlexWaveformOptions.OccupiedBandwidthHz">band placement</see> handles it for you.
 /// </remarks>
 public sealed class FlexWaveformIqOutput : IDisposable
 {
@@ -26,15 +35,28 @@ public sealed class FlexWaveformIqOutput : IDisposable
     private readonly WaveformIqTxBuffer _buffer;
     private readonly Action<VitaPacket> _onVita;
     private readonly float[] _reflect = new float[4096];       // scratch for one reflected packet (single event thread)
+    private readonly double _shiftStep;                        // NCO radians/sample; 0 = pass through
+    private readonly float[] _shiftScratch = new float[4096];  // reused, so Write stays allocation-free
+    private double _shiftPhase;
     private int _packetCount;
     private int _disposed;
 
     /// <summary>Creates a waveform TX sink over <paramref name="client"/>, buffering up to
-    /// <paramref name="bufferSeconds"/> of IQ (back-pressure past that).</summary>
-    public FlexWaveformIqOutput(FlexClient client, double bufferSeconds = 3.0)
+    /// <paramref name="bufferSeconds"/> of IQ (back-pressure past that), optionally shifting every
+    /// sample by <paramref name="shiftHz"/> on the way in.</summary>
+    /// <param name="client">The shared session.</param>
+    /// <param name="bufferSeconds">How much IQ to buffer before <see cref="Write"/> back-pressures.</param>
+    /// <param name="shiftHz">
+    /// Frequency shift applied to written samples, in Hz. <see cref="FlexWaveform"/> uses this to move
+    /// a caller's baseband into the sideband the radio actually transmits. It is a true frequency
+    /// translation, <b>not</b> a spectral mirror — conjugating would land the signal in the same place
+    /// while inverting it, which no receiver would decode.
+    /// </param>
+    public FlexWaveformIqOutput(FlexClient client, double bufferSeconds = 3.0, double shiftHz = 0)
     {
         ArgumentNullException.ThrowIfNull(client);
         _client = client;
+        _shiftStep = 2 * Math.PI * shiftHz / SampleRate;
         _buffer = new WaveformIqTxBuffer(Math.Max(SampleRate / 2, (int)(SampleRate * bufferSeconds)));
         _onVita = OnVita;
         _onStatus = OnStatus;
@@ -102,7 +124,45 @@ public sealed class FlexWaveformIqOutput : IDisposable
     /// <summary>Enqueues interleaved <c>I, Q</c> samples (at <see cref="SampleRate"/>) for
     /// transmission. Blocks while the buffer is full — back-pressure off the radio's drain rate.
     /// Key the PTT first so the radio is pulling.</summary>
-    public void Write(ReadOnlySpan<float> interleavedIq) => _buffer.Write(interleavedIq);
+    public void Write(ReadOnlySpan<float> interleavedIq)
+    {
+        if (_shiftStep == 0)
+        {
+            _buffer.Write(interleavedIq);
+            return;
+        }
+
+        // Shift in reused chunks: called on the producer thread, once per sample, so it must not
+        // allocate. Phase runs on across chunks and across calls, keeping the output continuous.
+        while (!interleavedIq.IsEmpty)
+        {
+            int floats = Math.Min(interleavedIq.Length, _shiftScratch.Length) & ~1;
+            ReadOnlySpan<float> source = interleavedIq[..floats];
+            Span<float> destination = _shiftScratch.AsSpan(0, floats);
+
+            for (int n = 0; n < floats; n += 2)
+            {
+                (double sin, double cos) = Math.SinCos(_shiftPhase);
+                double i = source[n];
+                double q = source[n + 1];
+                destination[n] = (float)((i * cos) - (q * sin));
+                destination[n + 1] = (float)((i * sin) + (q * cos));
+
+                _shiftPhase += _shiftStep;
+                if (_shiftPhase > Math.PI)
+                {
+                    _shiftPhase -= 2 * Math.PI;
+                }
+                else if (_shiftPhase < -Math.PI)
+                {
+                    _shiftPhase += 2 * Math.PI;
+                }
+            }
+
+            _buffer.Write(destination);
+            interleavedIq = interleavedIq[floats..];
+        }
+    }
 
     /// <summary>Waits (up to <paramref name="timeout"/>) for the buffered IQ to finish going out —
     /// the sample-domain half of PTT release. Unkey after this returns. Returns true if fully drained.</summary>

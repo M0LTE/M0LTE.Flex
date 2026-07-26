@@ -212,8 +212,19 @@ namespace M0LTE.Flex
     }
     public sealed class FlexWaveform : System.IAsyncDisposable
     {
+        public double BasebandShiftHz { get; }
         public M0LTE.Flex.FlexClient Client { get; }
+        [System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "LowMhz",
+                "HighMhz"})]
+        public System.ValueTuple<double, double>? OccupiedBand { get; }
+        public double SliceFrequencyMhz { get; }
         public string SliceIndex { get; }
+        [System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Low",
+                "High"})]
+        public System.ValueTuple<int, int>? TransmitFilter { get; }
+        public string? TransmitFilterWarning { get; }
         public string? TuneWarning { get; }
         public string WaveformName { get; }
         public M0LTE.Flex.FlexWaveformIqOutput CreateIqOutput(double bufferSeconds = 3) { }
@@ -224,7 +235,7 @@ namespace M0LTE.Flex
     public sealed class FlexWaveformIqOutput : System.IDisposable
     {
         public const int SampleRate = 24000;
-        public FlexWaveformIqOutput(M0LTE.Flex.FlexClient client, double bufferSeconds = 3) { }
+        public FlexWaveformIqOutput(M0LTE.Flex.FlexClient client, double bufferSeconds = 3, double shiftHz = 0) { }
         public long PacketsReflected { get; }
         public long SamplesStarved { get; }
         public bool Transmitting { get; }
@@ -234,13 +245,18 @@ namespace M0LTE.Flex
     }
     public sealed class FlexWaveformOptions : System.IEquatable<M0LTE.Flex.FlexWaveformOptions>
     {
+        public const int MaxTransmitFilterHighHz = 10000;
         public FlexWaveformOptions() { }
         public string Antenna { get; init; }
+        public M0LTE.Flex.IqBandReference BandReference { get; init; }
         public string Frequency { get; init; }
         public string Mode { get; init; }
         public string Name { get; init; }
+        public int? OccupiedBandwidthHz { get; init; }
         public int? RfPower { get; init; }
         public System.TimeSpan SetupTimeout { get; init; }
+        public int? TransmitFilterHighHz { get; init; }
+        public int? TransmitFilterLowHz { get; init; }
         public int TxFilterHighHz { get; init; }
         public int TxFilterLowHz { get; init; }
         public string UnderlyingMode { get; init; }
@@ -251,8 +267,14 @@ namespace M0LTE.Flex
         int SampleRate { get; }
         int Read(System.Span<float> interleaved);
     }
+    public enum IqBandReference
+    {
+        Centre = 0,
+        LowerEdge = 1,
+    }
     public sealed class MockFlexRadio : System.IAsyncDisposable
     {
+        public const int MaxTransmitFilterHighHz = 10000;
         public const string MeterListReply = @"meter 1.src=COD-#1.num=1#1.nam=MICPEAK#1.low=-150.0#1.hi=20.0#1.desc=Signal strength of MIC output in CODEC#1.unit=dBFS#1.fps=40#3.src=TX-#3.num=5#3.nam=HWALC#3.low=-150.0#3.hi=20.0#3.desc=Voltage present at the Hardware ALC RCA Plug#3.unit=dBFS#3.fps=20#4.src=RAD#4.num=208#4.nam=+13.8A#4.low=10.5#4.hi=15.0#4.desc=Main radio input voltage before fuse#4.unit=Volts#4.fps=0#6.src=TX-#6.num=1#6.nam=FWDPWR#6.low=0.0#6.hi=53.0#6.desc=RF Power Forward#6.unit=dBm#6.fps=20#7.src=TX-#7.num=2#7.nam=REFPWR#7.low=0.0#7.hi=53.0#7.desc=RF Power Reflected#7.unit=dBm#7.fps=20#8.src=TX-#8.num=3#8.nam=SWR#8.low=1.0#8.hi=999.0#8.desc=RF SWR#8.unit=SWR#8.fps=20#9.src=TX-#9.num=4#9.nam=PATEMP#9.low=0.0#9.hi=120.0#9.desc=PA Temperature#9.unit=degC#9.fps=0#";
         public const uint MeterStreamId = 1792u;
         public MockFlexRadio(M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.MockRxMode mode = 1, M0LTE.Flex.MockSetupMode setupMode = 0, string station = "Flex", string sliceLetter = "A") { }
@@ -261,6 +283,10 @@ namespace M0LTE.Flex
         public System.Collections.Generic.IReadOnlyList<string> CommandLog { get; }
         public System.Action<byte[]>? RxDelivery { get; set; }
         public int TcpPort { get; }
+        [System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Low",
+                "High"})]
+        public System.ValueTuple<int, int> TransmitFilter { get; }
         public int UdpPort { get; }
         public void DeliverTxPacket(byte[] packet) { }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }

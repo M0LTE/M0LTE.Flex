@@ -57,6 +57,20 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private const uint RejectedError = 0x50000000;
     private const uint AlreadyBoundError = 0x5000003E;
 
+    /// <summary>What a real 6500 answers to <c>transmit set hi=</c>/<c>lo=</c> — the transmit filter
+    /// is REPORTED as <c>lo</c>/<c>hi</c> but can only be SET with <c>filter_low=</c>/
+    /// <c>filter_high=</c>. Modelled so that asymmetry is discoverable offline.</summary>
+    private const uint TransmitSetterRejectedError = 0x5000002D;
+
+    /// <summary>The radio's hard ceiling on the transmit filter's high cut: values above this are
+    /// silently clamped, not rejected (measured on M0LTE's 6500, 2026-07-26).</summary>
+    public const int MaxTransmitFilterHighHz = 10000;
+
+    /// <summary>The factory transmit passband — an ordinary 3 kHz SSB filter. This, not the
+    /// waveform's own <c>tx_filter</c>, is what caps occupied bandwidth on air, so a waveform client
+    /// that never raises it transmits 3 kHz however wide its IQ is.</summary>
+    private const int DefaultTransmitFilterHighHz = 3000;
+
     /// <summary>The band a fresh headless slice snaps to under <c>band_persistence_enabled=1</c>
     /// — the "last-used band". <c>slice create</c> reports this regardless of the requested
     /// <c>freq</c>; only an explicit <c>slice t</c> moves the slice off it (the real 6500's
@@ -90,6 +104,15 @@ public sealed class MockFlexRadio : IAsyncDisposable
     // The modelled slice frequency. Starts on the persisted band and, headless, IGNORES the
     // `slice create freq=…` request (band persistence); only `slice t` moves it.
     private string _sliceFrequency = PersistedBandFrequency;
+
+    // The modelled slice mode. `slice create` reports USB (as a real 6500 does even for a DIGU
+    // request); `slice set <idx> mode=<m>` moves it.
+    private string _sliceMode = "USB";
+
+    // The modelled transmit passband, reported on the `transmit` object as lo/hi.
+    private int _txFilterLow;
+    private int _txFilterHigh = DefaultTransmitFilterHighHz;
+    private int _rfPower = 100;
 
     /// <summary>Creates a mock radio serving <paramref name="format"/>.</summary>
     /// <param name="format">The DAX transport the client will use.</param>
@@ -311,6 +334,15 @@ public sealed class MockFlexRadio : IAsyncDisposable
                     .ConfigureAwait(false);
             }
         }
+        else if (cmd == "sub tx all")
+        {
+            await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
+            await SendTransmitStatusAsync().ConfigureAwait(false);
+        }
+        else if (cmd.StartsWith("transmit set ", StringComparison.Ordinal))
+        {
+            await HandleTransmitSetAsync(seq, cmd["transmit set ".Length..]).ConfigureAwait(false);
+        }
         else if (cmd == "sub slice all")
         {
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
@@ -340,7 +372,7 @@ public sealed class MockFlexRadio : IAsyncDisposable
             await WriteLineAsync($"R{seq}|0|0").ConfigureAwait(false);
             await WriteLineAsync(
                 $"S{HandleHex}|slice 0 index_letter={_sliceLetter} client_handle=0x{HandleHex} "
-                + $"in_use=1 mode=USB RF_frequency={_sliceFrequency}").ConfigureAwait(false);
+                + $"in_use=1 mode={_sliceMode} RF_frequency={_sliceFrequency}").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("slice t ", StringComparison.Ordinal))
         {
@@ -393,6 +425,18 @@ public sealed class MockFlexRadio : IAsyncDisposable
             if (cmd.Contains("tx=1", StringComparison.Ordinal))
             {
                 await WriteLineAsync($"S{HandleHex}|slice 0 tx=1").ConfigureAwait(false);
+            }
+
+            // Reflect a mode change in the slice's status. Acknowledging `mode=` and then still
+            // reporting the old mode is the band-persistence trap in another costume: a client that
+            // reads the mode back to confirm its waveform engaged would see a false failure here, and
+            // one that trusts err=0 alone would miss a real one.
+            int modeAt = cmd.IndexOf("mode=", StringComparison.Ordinal);
+            if (modeAt >= 0)
+            {
+                string mode = cmd[(modeAt + 5)..].Split(' ')[0];
+                _sliceMode = mode;
+                await WriteLineAsync($"S{HandleHex}|slice 0 mode={mode}").ConfigureAwait(false);
             }
         }
         else if (cmd.StartsWith("waveform create", StringComparison.Ordinal))
@@ -451,6 +495,57 @@ public sealed class MockFlexRadio : IAsyncDisposable
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Models <c>transmit set</c>. Only <c>filter_low=</c>/<c>filter_high=</c> move the transmit
+    /// passband; the <c>lo=</c>/<c>hi=</c> spellings that appear in the *status* are rejected, and a
+    /// high cut above <see cref="MaxTransmitFilterHighHz"/> is silently clamped rather than refused.
+    /// </summary>
+    private async Task HandleTransmitSetAsync(string seq, string arguments)
+    {
+        foreach (string token in arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            int eq = token.IndexOf('=', StringComparison.Ordinal);
+            if (eq < 0)
+            {
+                continue;
+            }
+
+            string key = token[..eq];
+            string value = token[(eq + 1)..];
+
+            // Rejecting these is the point: a client that sets what it reads back gets an error
+            // rather than silence, so the asymmetry is discoverable without a radio.
+            if (key is "lo" or "hi")
+            {
+                await WriteLineAsync($"R{seq}|{TransmitSetterRejectedError:X8}|").ConfigureAwait(false);
+                return;
+            }
+
+            if (!int.TryParse(value, out int number))
+            {
+                continue;
+            }
+
+            switch (key)
+            {
+                case "filter_low": _txFilterLow = number; break;
+                case "filter_high": _txFilterHigh = Math.Min(number, MaxTransmitFilterHighHz); break;
+                case "rfpower": _rfPower = number; break;
+                default: break;
+            }
+        }
+
+        await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
+        await SendTransmitStatusAsync().ConfigureAwait(false);
+    }
+
+    private Task SendTransmitStatusAsync() => WriteLineAsync(
+        $"S{HandleHex}|transmit lo={_txFilterLow} hi={_txFilterHigh} tx_filter_changes_allowed=1 "
+        + $"rfpower={_rfPower} max_power_level=100 tune=0 tx_slice_mode={_sliceMode}");
+
+    /// <summary>The transmit passband the mock currently models, as (low, high) in Hz.</summary>
+    public (int Low, int High) TransmitFilter => (_txFilterLow, _txFilterHigh);
 
     /// <summary>The <c>meter list</c> reply the mock serves — a real FLEX-6500's transmit
     /// meter set, ids and all.</summary>
@@ -596,7 +691,19 @@ public sealed class MockFlexRadio : IAsyncDisposable
 
     private async Task WaveformPushLoopAsync(CancellationToken cancellation)
     {
-        var silence = new float[256]; // 128 complex "mic" samples the radio hands the waveform
+        const int SamplesPerPacket = 128;
+        var silence = new float[SamplesPerPacket * 2]; // 128 complex "mic" samples the radio hands the waveform
+
+        // Pace at the real 6500's rate — 187.5 packets/s, i.e. 128 complex samples every 5⅓ ms, which
+        // is exactly FlexWaveformIqOutput.SampleRate. The deadline is computed from the start rather
+        // than slept per iteration, so coarse timer granularity averages out instead of accumulating.
+        //
+        // This has to be right: a mock that pulls faster than 24 kHz starves *any* correctly paced
+        // producer, so a burst comes back zero-filled at the gaps and an offline test reports
+        // splatter that no real radio would produce.
+        long start = Environment.TickCount64;
+        long sent = 0;
+
         try
         {
             while (!cancellation.IsCancellationRequested)
@@ -604,7 +711,14 @@ public sealed class MockFlexRadio : IAsyncDisposable
                 byte[] buffer = DaxStreamFormat.FullBandwidth.BuildPacket(WaveformTxStreamId, _waveformPushCount, silence);
                 _waveformPushCount = (_waveformPushCount + 1) & 0x0F;
                 DeliverRx(buffer);
-                await Task.Delay(1, cancellation).ConfigureAwait(false);
+                sent++;
+
+                long due = start + (sent * 1000L * SamplesPerPacket / FlexWaveformIqOutput.SampleRate);
+                long wait = due - Environment.TickCount64;
+                if (wait > 0)
+                {
+                    await Task.Delay((int)wait, cancellation).ConfigureAwait(false);
+                }
             }
         }
         catch (OperationCanceledException)
