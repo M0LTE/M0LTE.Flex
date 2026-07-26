@@ -44,6 +44,38 @@ public sealed record FlexStationOptions
     /// <summary>RX audio gain 0–100 (default 50).</summary>
     public int Gain { get; init; } = 50;
 
+    /// <summary>
+    /// Point the transmitter at DAX as its audio source (<c>transmit set dax=1</c>). Default true.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Without this, DAX transmit puts nothing on air.</b> Creating the DAX streams and
+    /// pushing packets into them is not enough: the transmitter has its own audio-source selection,
+    /// which defaults to the mic input, and every command in the DAX enable returns <c>err=0</c>
+    /// whether or not it is set. Measured on a FLEX-6500 (fw 4.1.5, 2026-07-26) — a 1 kHz tone
+    /// produced no modulation whatsoever until <c>transmit set dax=1</c> was sent.</para>
+    /// <para>It is a <b>global</b> radio setting: it persists after teardown and affects what the
+    /// radio transmits from thereafter. Set false to leave the radio's own selection alone — for a
+    /// receive-only session, or where something else owns the transmitter.</para>
+    /// </remarks>
+    public bool SelectDaxAsTransmitSource { get; init; } = true;
+
+    /// <summary>
+    /// High cut of the radio's transmit filter (Hz), applied with <c>transmit set filter_high=</c>.
+    /// Null (the default) leaves the radio's own setting alone.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>This, not the slice, is what limits transmitted DAX audio bandwidth.</b> Measured on
+    /// a FLEX-6500 (fw 4.1.5, 2026-07-26): an audio sweep transmitted through DAX was cut at exactly
+    /// 10 kHz with the filter at 10000, and at exactly 3 kHz with it at 3000. DAX audio is therefore
+    /// not the ~3 kHz path it is often assumed to be — it carries whatever this filter allows, up to
+    /// the radio's 10 kHz clamp, the same ceiling the waveform path has.</para>
+    /// <para>It is a <b>global</b> radio setting that persists after teardown, which is why the
+    /// default is to leave it alone: a station that quietly widened it would change what every other
+    /// client transmits. <see cref="FlexStation.TransmitFilter"/> reports what is actually in force,
+    /// so a stale value is visible rather than silently shaping your signal.</para>
+    /// </remarks>
+    public int? TransmitFilterHighHz { get; init; }
+
     /// <summary>Enable keepalive + ping so a wedged radio is detected (default true).</summary>
     public bool Keepalive { get; init; } = true;
 
@@ -188,8 +220,129 @@ public sealed class FlexStation : IAsyncDisposable
         // 5. The eight-step DAX enable, shared unchanged with the attach path.
         await station.EnableDaxAsync(options, cancellation).ConfigureAwait(false);
 
+        // 6. Point the transmitter at DAX. Without this the streams exist, the packets flow and the
+        //    radio keys — with nothing modulated onto it, because the transmitter is still
+        //    listening to the mic.
+        await station.SelectDaxTransmitSourceAsync(options, cancellation).ConfigureAwait(false);
+
+        // 7. Read back (and optionally set) the filter that governs transmitted audio bandwidth.
+        await station.ApplyTransmitFilterAsync(options, cancellation).ConfigureAwait(false);
+
         await station.FinishAsync(options, cancellation).ConfigureAwait(false);
         return station;
+    }
+
+    /// <summary>Whether the radio reports DAX as the transmitter's audio source after setup. Null if
+    /// it never reported, or if <see cref="FlexStationOptions.SelectDaxAsTransmitSource"/> was
+    /// false.</summary>
+    public bool? TransmitSourceIsDax { get; private set; }
+
+    /// <summary>A human-readable warning if the transmitter could not be pointed at DAX, else null.
+    /// Setup does not throw: receive still works, and the caller may only want receive.</summary>
+    public string? TransmitSourceWarning { get; private set; }
+
+    /// <summary>
+    /// Selects DAX as the transmitter's audio source and reads back whether it took.
+    /// </summary>
+    /// <remarks>
+    /// The read-back is the point. This is the step whose absence produced a fully successful-looking
+    /// transmission with no modulation on it, so confirming the radio agrees is worth a round trip.
+    /// </remarks>
+    private async Task SelectDaxTransmitSourceAsync(FlexStationOptions options, CancellationToken cancellation)
+    {
+        if (!options.SelectDaxAsTransmitSource)
+        {
+            return;
+        }
+
+        // The transmit object is only readable once subscribed.
+        await TryBestEffortAsync("sub tx all", cancellation).ConfigureAwait(false);
+        await TryBestEffortAsync("transmit set dax=1", cancellation).ConfigureAwait(false);
+
+        bool? applied = await WaitForTransmitDaxAsync(options.SetupTimeout, cancellation).ConfigureAwait(false);
+        TransmitSourceIsDax = applied;
+
+        if (applied != true)
+        {
+            TransmitSourceWarning =
+                "the transmitter did not report DAX as its audio source (transmit dax="
+                + (applied is null ? "unreported" : "0")
+                + "); transmitted audio will be silent even though DAX packets are being sent";
+            Debug.WriteLine($"flex: {TransmitSourceWarning}");
+        }
+    }
+
+    private async Task<bool?> WaitForTransmitDaxAsync(TimeSpan timeout, CancellationToken cancellation)
+    {
+        long deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+        bool? last = null;
+        while (true)
+        {
+            if (_client.TryFindObject("transmit", _ => true, out string name)
+                && _client.TryGetObject(name, out IReadOnlyDictionary<string, string> transmit)
+                && transmit.TryGetValue("dax", out string? dax))
+            {
+                last = dax is "1" or "true" or "True";
+                if (last == true)
+                {
+                    return true;
+                }
+            }
+
+            if (Environment.TickCount64 > deadline)
+            {
+                return last;
+            }
+
+            await Task.Delay(20, cancellation).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The transmit passband the radio reports, as (low, high) in Hz — what actually limits
+    /// transmitted audio bandwidth. Null if the radio never reported it.</summary>
+    public (int Low, int High)? TransmitFilter { get; private set; }
+
+    /// <summary>
+    /// Sets the transmit filter if asked to, then reads back whatever is in force.
+    /// </summary>
+    /// <remarks>
+    /// The read-back happens either way. Leaving the filter alone is the right default, but it means
+    /// the transmitted bandwidth is inherited from whatever last touched the radio — so reporting it
+    /// is what stops a stale value silently shaping the signal.
+    /// </remarks>
+    private async Task ApplyTransmitFilterAsync(FlexStationOptions options, CancellationToken cancellation)
+    {
+        await TryBestEffortAsync("sub tx all", cancellation).ConfigureAwait(false);
+
+        if (options.TransmitFilterHighHz is int high)
+        {
+            await TryBestEffortAsync($"transmit set filter_high={high}", cancellation).ConfigureAwait(false);
+        }
+
+        long deadline = Environment.TickCount64 + (long)options.SetupTimeout.TotalMilliseconds;
+        while (true)
+        {
+            if (_client.TryFindObject("transmit", _ => true, out string name)
+                && _client.TryGetObject(name, out IReadOnlyDictionary<string, string> transmit)
+                && transmit.TryGetValue("lo", out string? lo)
+                && transmit.TryGetValue("hi", out string? hi)
+                && int.TryParse(lo, NumberStyles.Integer, CultureInfo.InvariantCulture, out int lowHz)
+                && int.TryParse(hi, NumberStyles.Integer, CultureInfo.InvariantCulture, out int highHz))
+            {
+                TransmitFilter = (lowHz, highHz);
+                if (options.TransmitFilterHighHz is not int want || highHz == Math.Min(want, 10000))
+                {
+                    return;
+                }
+            }
+
+            if (Environment.TickCount64 > deadline)
+            {
+                return;
+            }
+
+            await Task.Delay(20, cancellation).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Creates the DAX-RX audio source.</summary>

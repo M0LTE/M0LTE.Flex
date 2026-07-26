@@ -7,16 +7,19 @@ namespace M0LTE.Flex.Tools.IqGen;
 /// </summary>
 internal static class Signals
 {
-    /// <summary>The FlexRadio waveform rate, and so the rate everything here is generated at.</summary>
+    /// <summary>The FlexRadio waveform rate, and the default here. The DAX audio path runs at 24 kHz
+    /// (reduced bandwidth) or 48 kHz (full bandwidth), so every generator takes an explicit rate —
+    /// producing 24 kHz audio for a 48 kHz stream would transmit it at half speed, an octave down,
+    /// sounding like a signal the whole way.</summary>
     public const int SampleRate = 24000;
 
     /// <summary>A single complex tone. Asymmetric by construction, so where it lands identifies the
     /// radio's sideband and orientation outright — unlike a symmetric pair, which cannot.</summary>
-    public static float[] Tone(double offsetHz, double seconds, double amplitude)
+    public static float[] Tone(double offsetHz, double seconds, double amplitude, int rate = SampleRate)
     {
-        int count = (int)(seconds * SampleRate);
+        int count = (int)(seconds * rate);
         var iq = new float[count * 2];
-        double step = 2 * Math.PI * offsetHz / SampleRate;
+        double step = 2 * Math.PI * offsetHz / rate;
         double phase = 0;
         for (int n = 0; n < count; n++)
         {
@@ -32,10 +35,10 @@ internal static class Signals
 
     /// <summary>Two tones at unequal offsets. Their spacing and order survive an upright path and
     /// reverse under a mirrored one, so this reads inversion without needing a demodulator.</summary>
-    public static float[] TwoTone(double firstHz, double secondHz, double seconds, double amplitude)
+    public static float[] TwoTone(double firstHz, double secondHz, double seconds, double amplitude, int rate = SampleRate)
     {
-        float[] a = Tone(firstHz, seconds, amplitude / 2);
-        float[] b = Tone(secondHz, seconds, amplitude / 2);
+        float[] a = Tone(firstHz, seconds, amplitude / 2, rate);
+        float[] b = Tone(secondHz, seconds, amplitude / 2, rate);
         for (int i = 0; i < a.Length; i++)
         {
             a[i] += b[i];
@@ -46,9 +49,9 @@ internal static class Signals
 
     /// <summary>A linear frequency sweep. On a waterfall the sweep line simply stops where the
     /// radio's passband ends, which maps an edge in one transmission.</summary>
-    public static float[] Chirp(double startHz, double endHz, double seconds, double amplitude)
+    public static float[] Chirp(double startHz, double endHz, double seconds, double amplitude, int rate = SampleRate)
     {
-        int count = (int)(seconds * SampleRate);
+        int count = (int)(seconds * rate);
         var iq = new float[count * 2];
         double phase = 0;
         for (int n = 0; n < count; n++)
@@ -58,7 +61,7 @@ internal static class Signals
             (double sin, double cos) = Math.SinCos(phase);
             iq[2 * n] = (float)(amplitude * cos);
             iq[(2 * n) + 1] = (float)(amplitude * sin);
-            phase = Wrap(phase + (2 * Math.PI * hz / SampleRate));
+            phase = Wrap(phase + (2 * Math.PI * hz / rate));
         }
 
         return iq;
@@ -70,9 +73,9 @@ internal static class Signals
     /// are exact and there is no filter transition to mistake for the radio's.
     /// </summary>
     /// <param name="gainAt">Linear amplitude for a given baseband frequency in Hz; return 0 to exclude.</param>
-    public static float[] ShapedNoise(Func<double, double> gainAt, double seconds, double amplitude, int seed)
+    public static float[] ShapedNoise(Func<double, double> gainAt, double seconds, double amplitude, int seed, int rate = SampleRate)
     {
-        int count = (int)(seconds * SampleRate);
+        int count = (int)(seconds * rate);
         int size = 1;
         while (size < count)
         {
@@ -86,7 +89,7 @@ internal static class Signals
         for (int k = 0; k < size; k++)
         {
             // Bins above size/2 are the negative frequencies.
-            double hz = (k <= size / 2 ? k : k - size) * (double)SampleRate / size;
+            double hz = (k <= size / 2 ? k : k - size) * (double)rate / size;
             double gain = gainAt(hz);
             if (gain <= 0)
             {
@@ -122,15 +125,15 @@ internal static class Signals
     }
 
     /// <summary>Flat band-limited noise between two baseband frequencies.</summary>
-    public static float[] Noise(double lowHz, double highHz, double seconds, double amplitude, int seed) =>
-        ShapedNoise(hz => hz >= lowHz && hz <= highHz ? 1 : 0, seconds, amplitude, seed);
+    public static float[] Noise(double lowHz, double highHz, double seconds, double amplitude, int seed, int rate = SampleRate) =>
+        ShapedNoise(hz => hz >= lowHz && hz <= highHz ? 1 : 0, seconds, amplitude, seed, rate);
 
     /// <summary>
     /// Noise in stepped levels across the band — the orientation check. The steps run one way up the
     /// spectrum, so a mirrored path shows them running the other way. A flat noise band or a single
     /// tone cannot reveal that; this can, at a glance, with no receiver-side processing.
     /// </summary>
-    public static float[] Staircase(double lowHz, double highHz, int steps, double stepDb, double seconds, double amplitude, int seed)
+    public static float[] Staircase(double lowHz, double highHz, int steps, double stepDb, double seconds, double amplitude, int seed, int rate = SampleRate)
     {
         double width = (highHz - lowHz) / steps;
         return ShapedNoise(
@@ -146,7 +149,8 @@ internal static class Signals
             },
             seconds,
             amplitude,
-            seed);
+            seed,
+            rate);
     }
 
     /// <summary>
@@ -154,10 +158,10 @@ internal static class Signals
     /// companders it produces something that still looks plausible on a spectrum display but will not
     /// demodulate. The one corpus entry whose failure mode is invisible to a waterfall.
     /// </summary>
-    public static float[] Qpsk(double symbolRate, double beta, double centreHz, double seconds, double amplitude, int seed)
+    public static float[] Qpsk(double symbolRate, double beta, double centreHz, double seconds, double amplitude, int seed, int rate = SampleRate)
     {
-        int count = (int)(seconds * SampleRate);
-        int sps = (int)Math.Round(SampleRate / symbolRate);
+        int count = (int)(seconds * rate);
+        int sps = (int)Math.Round(rate / symbolRate);
         int symbols = (count / sps) + 1;
         var random = new Random(seed);
 
@@ -194,7 +198,7 @@ internal static class Signals
         // level, and this one was ~10 dB light until it was measured.
         var raw = new double[count * 2];
         double phase = 0;
-        double step = 2 * Math.PI * centreHz / SampleRate;
+        double step = 2 * Math.PI * centreHz / rate;
         for (int n = 0; n < count; n++)
         {
             double accI = 0;

@@ -44,8 +44,14 @@ internal static class Program
           --rms <0..1>      per-component RMS, +/-1.0 full scale (default: 0.15)
           --format <f>      cf32 (interleaved float32 LE, GNU Radio .cfile — default) or cs16
           --seed <n>        PRNG seed, for a byte-identical repeat (default: 1)
+          --rate <hz>       sample rate (default: 24000, the waveform rate). Use 48000 for the
+                            DAX full-bandwidth audio path — generating at the wrong rate plays
+                            back at the wrong speed and pitch, sounding like a signal throughout
           --out <path>      write here instead of stdout
           --corpus <dir>    write the whole corpus, plus a README describing what each one proves
+          --real            emit MONO REAL audio (the I channel alone) instead of complex I/Q,
+                            for the DAX audio path. A complex tone at +/-f becomes a real tone
+                            at |f|, since a real audio path cannot carry the sign
           --sigmf           also write SigMF .sigmf-meta sidecars, so the files carry their own
                             sample rate and type instead of relying on the reader knowing them
                             (needs --out or --corpus; a pipe has nowhere to put a sidecar)
@@ -88,6 +94,8 @@ internal static class Program
         string? outPath = null;
         string? corpusDir = null;
         bool sigmf = false;
+        bool real = false;
+        int rate = Signals.SampleRate;
 
         for (int i = signal.Length > 0 ? 1 : 0; i < args.Length; i++)
         {
@@ -113,6 +121,8 @@ internal static class Program
                 case "--out": outPath = Value(); break;
                 case "--corpus": corpusDir = Value(); break;
                 case "--sigmf": sigmf = true; break;
+                case "--real": real = true; break;
+                case "--rate": rate = (int)ParseDouble(Value()); break;
                 default: throw new ArgumentException($"unknown option {key}");
             }
         }
@@ -127,14 +137,21 @@ internal static class Program
             throw new ArgumentException("name a signal (tone, twotone, noise, chirp, staircase, qpsk)");
         }
 
-        float[] iq = Generate(signal, seconds, bandwidth, offset, rms, seed);
+        float[] iq = Generate(signal, seconds, bandwidth, offset, rms, seed, rate);
 
         var scratch = new byte[8192];
         using (Stream destination = outPath is null
             ? Console.OpenStandardOutput()
             : new FileStream(outPath, FileMode.Create, FileAccess.Write))
         {
-            IqFormatIo.Write(destination, iq, format, scratch);
+            if (real)
+            {
+                IqFormatIo.WriteReal(destination, iq, format, scratch);
+            }
+            else
+            {
+                IqFormatIo.Write(destination, iq, format, scratch);
+            }
         }
 
         if (sigmf && outPath is not null)
@@ -143,21 +160,23 @@ internal static class Program
         }
 
         Console.Error.WriteLine(
-            $"{signal}: {iq.Length / 2:N0} complex samples, {iq.Length / 2.0 / Signals.SampleRate:F2} s "
-            + $"at {Signals.SampleRate} Hz, {format.ToString().ToLowerInvariant()}");
+            $"{signal}: {iq.Length / 2:N0} {(real ? "mono real" : "complex")} samples, "
+            + $"{iq.Length / 2.0 / rate:F2} s at {rate} Hz, "
+            + $"{format.ToString().ToLowerInvariant()}{(real ? " (I channel only)" : "")}");
         return 0;
     }
 
     /// <summary>Builds one named signal. Offsets default below DC — the half that transmits.</summary>
     internal static float[] Generate(
-        string signal, double seconds, double bandwidth, double? offset, double rms, int seed) => signal switch
+        string signal, double seconds, double bandwidth, double? offset, double rms, int seed,
+        int rate = Signals.SampleRate) => signal switch
     {
-        "tone" => Signals.Tone(offset ?? -3000, seconds, rms * Math.Sqrt(2)),
-        "twotone" => Signals.TwoTone(offset ?? -2000, (offset ?? -2000) - 3000, seconds, rms * Math.Sqrt(2)),
-        "noise" => Signals.Noise((offset ?? 0) - bandwidth, offset ?? 0, seconds, rms, seed),
-        "chirp" => Signals.Chirp((offset ?? 0) - bandwidth, offset ?? 0, seconds, rms * Math.Sqrt(2)),
-        "staircase" => Signals.Staircase((offset ?? 0) - bandwidth, offset ?? 0, 5, 6, seconds, rms, seed),
-        "qpsk" => Signals.Qpsk(2400, 0.35, offset ?? -2000, seconds, rms, seed),
+        "tone" => Signals.Tone(offset ?? -3000, seconds, rms * Math.Sqrt(2), rate),
+        "twotone" => Signals.TwoTone(offset ?? -2000, (offset ?? -2000) - 3000, seconds, rms * Math.Sqrt(2), rate),
+        "noise" => Signals.Noise((offset ?? 0) - bandwidth, offset ?? 0, seconds, rms, seed, rate),
+        "chirp" => Signals.Chirp((offset ?? 0) - bandwidth, offset ?? 0, seconds, rms * Math.Sqrt(2), rate),
+        "staircase" => Signals.Staircase((offset ?? 0) - bandwidth, offset ?? 0, 5, 6, seconds, rms, seed, rate),
+        "qpsk" => Signals.Qpsk(2400, 0.35, offset ?? -2000, seconds, rms, seed, rate),
         _ => throw new ArgumentException(
             $"unknown signal '{signal}' (tone, twotone, noise, chirp, staircase, qpsk)"),
     };
