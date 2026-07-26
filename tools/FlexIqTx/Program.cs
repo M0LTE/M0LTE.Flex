@@ -38,7 +38,7 @@ internal static class Program
         the transmit filter, and refuses rather than truncating.
 
           flex-iq-gen noise --bw 3k | flex-iq-tx --radio 10.45.0.76 --freq 14.200 --bw 3k
-          flex-iq-tx --radio 10.45.0.76 --freq 14.200 --bw 10k < noise-10k.cf32
+          flex-iq-tx --radio 10.45.0.76 --freq 14.200 --bw 10k --direct < noise-10k.cf32
           sox rec.wav -t raw -e float -b 32 - | flex-iq-tx --radio … --freq 14.2 --bw 3k
 
         OPTIONS
@@ -56,9 +56,10 @@ internal static class Program
           --ant <port>      antenna (default: ANT1)
           --gain <x>        scale every sample by this before transmitting (default: 1.0)
           --max-seconds <n> stop after this much audio, however long the stream is
-          --raw             send the samples exactly as supplied at --freq, with no placement or
-                            shift — for a stream already positioned for the radio, such as the
-                            test corpus. Only its content below DC will transmit
+          --direct          send the samples exactly as supplied at --freq, with no placement or
+                            shift — for a capture replayed verbatim, or a probe that tests the
+                            radio's sideband behaviour rather than using it. Only its content
+                            below DC will transmit. (Unrelated to underlying_mode=RAW)
           --dry-run         read and measure the stream, report, never key the radio
           --verbose         dump the radio's slice status after setup
           --help            this text
@@ -125,8 +126,8 @@ internal static class Program
         options = ApplySidecar(options, log);
         log.WriteLine($"  input     {options.InputPath ?? "stdin"}, "
             + $"{options.Format.ToString().ToLowerInvariant()} at {SampleRate} Hz complex");
-        log.WriteLine(options.Raw
-            ? $"  slice     {options.FreqMhz:F6} MHz, samples sent verbatim (--raw); content below DC "
+        log.WriteLine(options.Direct
+            ? $"  slice     {options.FreqMhz:F6} MHz, samples sent verbatim (--direct); content below DC "
                 + $"reaches the air, filter set to {options.BandwidthHz:N0} Hz"
             : $"  band      {options.LowMhz:F6} – {options.HighMhz:F6} MHz   "
                 + $"({options.BandwidthHz:N0} Hz wide, {(options.Reference == IqBandReference.LowerEdge ? "lower-edge" : "centre")}-referenced)");
@@ -209,7 +210,7 @@ internal static class Program
                 UnderlyingMode = "RAW",
                 Frequency = options.FreqMhz.ToString("F6", CultureInfo.InvariantCulture),
                 Antenna = options.Antenna,
-                OccupiedBandwidthHz = options.Raw ? null : (int)Math.Round(options.BandwidthHz),
+                OccupiedBandwidthHz = options.Direct ? null : (int)Math.Round(options.BandwidthHz),
                 BandReference = options.Reference,
                 TransmitFilterHighHz = (int)Math.Round(options.BandwidthHz),
                 RfPower = (int)Math.Round(options.PowerWatts),

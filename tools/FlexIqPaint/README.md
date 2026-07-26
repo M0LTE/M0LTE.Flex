@@ -17,7 +17,7 @@ The picture is **ordinary complex baseband** at the frequencies you ask for, run
 `--lo`. Which half of the spectrum a Flex waveform actually transmits is the library's problem, not
 the picture's — `flex-iq-tx` derives the slice, shifts the samples and sets the filter.
 
-Note there is **no `--raw`** above. That flag replays a stream verbatim, which is right for a capture
+Note there is **no `--direct`** above. That flag replays a stream verbatim, which is right for a capture
 or for the corpus probes that deliberately test the radio's sideband behaviour, but wrong here: a
 picture pre-placed below DC bakes a quirk of one radio into the file and ties it to one transmit
 path. This tool used to do exactly that, and it leaked the concept straight back out to the caller.

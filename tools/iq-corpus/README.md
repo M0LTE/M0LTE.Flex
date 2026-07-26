@@ -4,18 +4,36 @@ Complex baseband at **24 kHz** — the FlexRadio waveform rate — as interleave
 no header. Transmit one with:
 
 ```sh
-flex-iq-tx --radio <ip> --freq 14.200 --bw <width> --raw < tone-minus3k.cf32
+flex-iq-tx --radio <ip> --freq 14.200 --bw <width> --direct < tone-minus3k.cf32
 ```
 
 Every file is already positioned **below DC** — the only half a Flex waveform transmits —
-so they are transmitted with **`--raw`**, which sends the samples verbatim at the frequency
+so they are transmitted with **`--direct`**, which sends the samples verbatim at the frequency
 you name. Expected results below are all relative to that tuned frequency. The one
 exception is `tone-plus3k`, deliberately placed in the half that should stay silent.
 
-(Without `--raw`, `flex-iq-tx` instead *places* a DC-centred or `0..bw` stream for you —
+(Without `--direct`, `flex-iq-tx` instead *places* a DC-centred or `0..bw` stream for you —
 that is the path for a modulator's output, not for these pre-positioned files.)
 
-Regenerate with `flex-iq-gen --corpus <dir>`. Files are byte-identical for a given seed.
+## Format
+
+`cf32` is interleaved little-endian **float32**, ±1.0 full scale, **no header** — byte-identical
+to GNU Radio's `complex64` and to a `.cfile`. It reads directly as `numpy.complex64`, and opens
+in GNU Radio, inspectrum, SDR#, and `sox -t raw -e float -b 32`. `cs16` is interleaved
+little-endian int16 at ±32767. Both are written explicitly little-endian, so they are
+host-independent.
+
+A bare `.cf32` carries no sample rate — get it wrong and every frequency you read off the file
+is wrong by the same factor, silently. Add `--sigmf` to write `.sigmf-data` + `.sigmf-meta`
+pairs instead, which carry the rate and datatype with them.
+
+`flex-iq-tx --in <file>` picks up a `.sigmf-meta` sidecar automatically: it takes the
+datatype from it and **checks** the sample rate against the waveform's 24 kHz, refusing a
+mismatch rather than transmitting a signal at the wrong width with every frequency scaled.
+Piping a bare `.cf32` on stdin still works; you just own the rate yourself.
+
+Regenerate with `flex-iq-gen --corpus <dir>` (add `--sigmf` for the self-describing form).
+Files are byte-identical for a given seed.
 
 | File | Proves | Expected on air |
 |---|---|---|
