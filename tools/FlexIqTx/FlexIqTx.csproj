@@ -12,4 +12,8 @@
     <ProjectReference Include="../../src/M0LTE.Flex/M0LTE.Flex.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.Flex.Tools.Tests" />
+  </ItemGroup>
+
 </Project>

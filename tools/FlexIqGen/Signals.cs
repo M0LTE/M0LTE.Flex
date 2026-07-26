@@ -188,7 +188,11 @@ internal static class Signals
 
         double norm = 1 / Math.Sqrt(energy);
 
-        var iq = new float[count * 2];
+        // Built unscaled first, then normalised to the requested RMS below: the RRC's tap energy
+        // and the symbol constellation together set the level, so a nominal amplitude applied up
+        // front lands wherever it happens to. Every corpus entry is meant to transmit at the same
+        // level, and this one was ~10 dB light until it was measured.
+        var raw = new double[count * 2];
         double phase = 0;
         double step = 2 * Math.PI * centreHz / SampleRate;
         for (int n = 0; n < count; n++)
@@ -216,9 +220,30 @@ internal static class Signals
 
             // Shift the modulated signal to its centre frequency.
             (double sin, double cos) = Math.SinCos(phase);
-            iq[2 * n] = (float)(amplitude * ((accI * cos) - (accQ * sin)));
-            iq[(2 * n) + 1] = (float)(amplitude * ((accI * sin) + (accQ * cos)));
+            raw[2 * n] = (accI * cos) - (accQ * sin);
+            raw[(2 * n) + 1] = (accI * sin) + (accQ * cos);
             phase = Wrap(phase + step);
+        }
+
+        return Normalise(raw, amplitude);
+    }
+
+    /// <summary>Scales a signal so its per-component RMS is <paramref name="amplitude"/>.</summary>
+    private static float[] Normalise(double[] raw, double amplitude)
+    {
+        double sum = 0;
+        foreach (double value in raw)
+        {
+            sum += value * value;
+        }
+
+        double rms = Math.Sqrt(sum / raw.Length);
+        double scale = rms > 0 ? amplitude / rms : 0;
+
+        var iq = new float[raw.Length];
+        for (int i = 0; i < raw.Length; i++)
+        {
+            iq[i] = (float)(raw[i] * scale);
         }
 
         return iq;

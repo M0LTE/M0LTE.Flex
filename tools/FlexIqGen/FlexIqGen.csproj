@@ -8,4 +8,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.Flex.Tools.Tests" />
+  </ItemGroup>
+
 </Project>
