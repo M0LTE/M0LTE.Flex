@@ -363,6 +363,20 @@ internal static class Program
             await producer.ConfigureAwait(false);
             log.WriteLine();
 
+            // Pad the tail to a whole transmit buffer. The radio pulls a fixed 128 complex samples
+            // at a time and zero-fills any shortfall, so a stream that is not a multiple of that
+            // ends with a part-filled packet — counted as a starve, and a real if tiny
+            // discontinuity. A file is rarely a whole number of packets long.
+            if (!_aborted)
+            {
+                long remainder = reader.SamplesRead % PacketPairs;
+                if (remainder != 0)
+                {
+                    int padPairs = (int)(PacketPairs - remainder);
+                    iq.Write(new float[padPairs * 2]);
+                }
+            }
+
             if (!_aborted && !iq.Drain(TimeSpan.FromSeconds(15)))
             {
                 Console.Error.WriteLine("warning: transmit buffer did not drain within 15 s");

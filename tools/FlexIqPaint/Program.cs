@@ -23,14 +23,17 @@ internal static class Program
 
           # Complex IQ for the waveform path (flex-iq-tx), which has room for more detail
           flex-iq-paint logo.png --out logo.cf32 --iq --rate 24000 --lo 300 --hi 9500 --bins 384
-          flex-iq-tx --radio <ip> --freq 14.200 --bw 10k --raw --in logo.cf32
+          flex-iq-tx --radio <ip> --freq 14.1905 --bw 9500 --reference loweredge --in logo.cf32
 
-        With --iq the tones are placed BELOW DC, the only half a Flex waveform transmits, so --lo
-        and --hi are distances below the carrier.
+        The picture is ordinary complex baseband at the frequencies you ask for, running upward
+        from --lo. Which half of the spectrum the radio actually transmits is the library's
+        problem, not the picture's: flex-iq-tx places the band for you. Note there is no --raw
+        above — that is the escape hatch for replaying a capture verbatim, not the normal path.
 
         OPTIONS
           --out <path>      where to write the samples (required)
-          --iq              emit interleaved complex I/Q (cf32) instead of mono real audio
+          --iq              emit interleaved complex I/Q (cf32) instead of mono real audio,
+                            for the waveform path via flex-iq-tx --reference loweredge
           --lo <hz>         lowest frequency in the picture (default: 300)
           --hi <hz>         highest (default: 2700 — raise to 9500 with a 10 kHz transmit filter)
           --bins <n>        frequency bins, i.e. image width after resize (default: 192)
@@ -148,7 +151,7 @@ internal static class Program
         int count = iq ? samples.Length / 2 : samples.Length;
         Console.Error.WriteLine($"  {image} ({source.GetLength(1)}x{source.GetLength(0)}) -> {output}");
         Console.Error.WriteLine(
-            $"  {bins} bins over {(iq ? "-" : "")}{options.HighHz:F0}..{(iq ? "-" : "")}{options.LowHz:F0} Hz "
+            $"  {bins} bins over {options.LowHz:F0}..{options.HighHz:F0} Hz "
             + $"({spacing:F1} Hz apart), {lines} lines x {options.LineMs:F0} ms");
         Console.Error.WriteLine(
             $"  {count:N0} {(iq ? "complex" : "mono")} samples, {count / (double)options.RateHz:F1} s "
