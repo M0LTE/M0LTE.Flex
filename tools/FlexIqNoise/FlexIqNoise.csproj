@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>flex-iq-noise</AssemblyName>
+    <RootNamespace>M0LTE.Flex.Tools.IqNoise</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.Flex/M0LTE.Flex.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -5,4 +5,9 @@
   <Folder Name="/tests/">
     <Project Path="tests/M0LTE.Flex.Tests/M0LTE.Flex.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/FlexIqGen/FlexIqGen.csproj" />
+    <Project Path="tools/FlexIqNoise/FlexIqNoise.csproj" />
+    <Project Path="tools/FlexIqTx/FlexIqTx.csproj" />
+  </Folder>
 </Solution>

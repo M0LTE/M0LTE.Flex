@@ -1,0 +1,6 @@
+# The corpus is ~13 MB of regenerable binaries: `flex-iq-gen --corpus .` rebuilds it
+# byte-identically from a fixed seed, so the generator is the artefact worth versioning.
+*.cf32
+*.cs16
+*.sigmf-data
+*.sigmf-meta
