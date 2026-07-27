@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net.Sockets;
 
 namespace M0LTE.Flex;
 
@@ -118,6 +119,12 @@ public sealed class FlexStation : IAsyncDisposable
 {
     private readonly FlexClient _client;
     private readonly DaxStreamFormat _format;
+
+    /// <summary>True once <see cref="CreateSliceAsync"/> has run — i.e. this is the headless path
+    /// and the slice at <see cref="SliceIndex"/> is one WE created and therefore own. The attach
+    /// path binds to a slice SmartSDR already owns and never sets this, so teardown knows not to
+    /// remove it.</summary>
+    private bool _createdSlice;
 
     private FlexStation(FlexClient client, DaxStreamFormat format)
     {
@@ -419,6 +426,7 @@ public sealed class FlexStation : IAsyncDisposable
             options.SetupTimeout,
             cancellation).ConfigureAwait(false);
         SliceIndex = sliceObject["slice ".Length..];
+        _createdSlice = true;
     }
 
     /// <summary>~2 Hz. A slice tunes in 1 Hz steps, so the reported <c>RF_frequency</c> should
@@ -626,5 +634,33 @@ public sealed class FlexStation : IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public ValueTask DisposeAsync() => _client.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        // Remove the slice WE created before dropping the client. A real FLEX-6500 does NOT
+        // auto-remove a headless client's slice when that client disconnects (measured downstream,
+        // 2026-07): the slice persists — tuned to our TX frequency, with a now-dead client handle —
+        // and headless sessions leak one each until the radio hits its four-slice limit, after which
+        // every `slice create` fails with 0x50000003 and stalls all callers. The attach path binds
+        // to a slice SmartSDR already owns, so it must never remove it; _createdSlice (set only by
+        // the headless CreateSliceAsync) is what tells the two apart. Best-effort and while the
+        // client is still alive — we are tearing down, so swallow a dead radio/socket.
+        if (_createdSlice && SliceIndex.Length > 0)
+        {
+            try
+            {
+                await _client.SendCommandAsync($"slice remove {SliceIndex}", CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                ex is FlexProtocolException or IOException or SocketException
+                   or ObjectDisposedException or OperationCanceledException or TimeoutException)
+            {
+                Debug.WriteLine(
+                    $"flex: best-effort 'slice remove {SliceIndex}' during dispose faulted "
+                    + $"({ex.Message}); continuing");
+            }
+        }
+
+        await _client.DisposeAsync().ConfigureAwait(false);
+    }
 }
