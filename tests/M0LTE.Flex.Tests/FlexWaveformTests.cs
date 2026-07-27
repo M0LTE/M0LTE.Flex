@@ -160,4 +160,76 @@ public sealed class FlexWaveformTests
         mock.CapturedWaveformIq.Count.Should().Be(
             (int)settled, "the radio keeps asking, but a silent sink must stop answering");
     }
+
+    [Fact]
+    public async Task A_cleanly_delivered_burst_reports_no_starve()
+    {
+        // Regression (M0LTE.Flex 0.8.0): a clean, fully-delivered burst over-counted its
+        // drain-then-unkey tail as starves. The radio keeps pulling transmit buffers at 187.5/s
+        // after the ring has drained and until the interlock parks; those empty pulls zero-pad
+        // benign silence between the last real sample and unkey — not a mid-stream discontinuity —
+        // and must not read as an underrun. Downstream the same mock burst measured
+        // SamplesStarved==0 on 0.5.0 but ==4608 on 0.8.0.
+        var mock = new MockFlexRadio(DaxStreamFormat.FullBandwidth, MockRxMode.Silence);
+        mock.Start();
+        await using var _ = mock;
+
+        FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
+        mock.RxDelivery = client.DeliverVitaPacket;
+        client.VitaSendHook = mock.DeliverTxPacket;
+
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1 });
+        using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
+        FlexPtt ptt = waveform.CreatePtt();
+
+        float[] burst = MakeIqBurst(pairs: 2560); // 20 mock packets of 128 complex, whole burst
+        iq.Write(burst);                           // fully buffered before keying — never falls behind
+        ptt.Key();
+        iq.Drain(TimeSpan.FromSeconds(2)).Should().BeTrue();
+        await WaitForAsync(() => mock.CapturedWaveformIq.Count >= burst.Length);
+
+        // The producer is done, but does not unkey instantly: the radio keeps pulling empty
+        // transmit buffers through the drain-then-unkey gap (this window is where 0.8.0 accrued
+        // its bogus starve). The fix holds those tail zero-pads rather than counting them.
+        await Task.Delay(200);
+        ptt.Unkey();
+        await WaitForAsync(() => !iq.Transmitting);
+
+        iq.SamplesStarved.Should().Be(0, "a fully-delivered burst never fell behind the radio");
+    }
+
+    [Fact]
+    public async Task A_mid_burst_underrun_is_still_counted()
+    {
+        // The other direction: a genuine mid-stream underrun — the producer stalls while keyed with
+        // real IQ still owed — puts zeros between real samples on air (a phase discontinuity, the
+        // failure the 0.5.0 interlock fix exists to catch). That must still count, so the tail fix
+        // cannot simply stop counting zero-pad.
+        var mock = new MockFlexRadio(DaxStreamFormat.FullBandwidth, MockRxMode.Silence);
+        mock.Start();
+        await using var _ = mock;
+
+        FlexClient client = await FlexClient.ConnectAsync("127.0.0.1", mock.TcpPort, mock.UdpPort);
+        mock.RxDelivery = client.DeliverVitaPacket;
+        client.VitaSendHook = mock.DeliverTxPacket;
+
+        await using FlexWaveform waveform = await FlexWaveform.SetUpHeadlessAsync(client, new FlexWaveformOptions { SliceFrequencyMhz = 14.1 });
+        using FlexWaveformIqOutput iq = waveform.CreateIqOutput();
+        FlexPtt ptt = waveform.CreatePtt();
+
+        iq.Write(MakeIqBurst(pairs: 256)); // first chunk (2 packets), buffered before keying
+        ptt.Key();
+        await WaitForAsync(() => mock.CapturedWaveformIq.Count >= 512); // first chunk drained
+
+        // Producer stalls with the PA still up and more of the burst to come: the radio pulls empty
+        // buffers across the gap.
+        await Task.Delay(200);
+
+        iq.Write(MakeIqBurst(pairs: 256)); // more real IQ arrives — the gap was a true underrun
+        iq.Drain(TimeSpan.FromSeconds(2)).Should().BeTrue();
+        ptt.Unkey();
+        await WaitForAsync(() => !iq.Transmitting);
+
+        iq.SamplesStarved.Should().BeGreaterThan(0, "the producer fell behind mid-burst with data still owed");
+    }
 }

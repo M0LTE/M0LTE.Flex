@@ -203,7 +203,10 @@ public sealed class FlexWaveformIqOutput : IDisposable
         if (_flushing && _buffer.IsEmpty)
         {
             // Tail delivered. Stop answering until the next key — the radio does not announce
-            // its return to RECEIVE on this path, so the ring emptying is the only signal.
+            // its return to RECEIVE on this path, so the ring emptying is the only signal. The
+            // zero-pad emitted across the drain-then-unkey window was benign silence, not a
+            // mid-stream underrun, so drop it rather than let the next burst confirm it as a starve.
+            _buffer.DiscardPendingStarve();
             _flushing = false;
             _transmitting = false;
         }
