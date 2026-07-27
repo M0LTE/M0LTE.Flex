@@ -16,7 +16,15 @@ public sealed class WaveformIqTxBufferTests
         buffer.TakePacket(destination);
 
         destination.Should().Equal(1f, 2f, 3f, 4f, 0f, 0f, 0f, 0f);
-        buffer.SamplesStarved.Should().Be(2); // the 2 unfilled pairs
+        // The 2 zero-pads are held, not counted yet: a shortfall with no real sample after it is the
+        // benign drained tail before unkey, not an underrun (the over-count fixed here).
+        buffer.SamplesStarved.Should().Be(0);
+
+        // More real IQ arrives and is pulled: now the earlier pad went out between real samples — a
+        // genuine mid-stream underrun — so it is confirmed as a starve.
+        buffer.Write([5f, 6f]);
+        buffer.TakePacket(new float[2]);
+        buffer.SamplesStarved.Should().Be(2);
     }
 
     [Fact]

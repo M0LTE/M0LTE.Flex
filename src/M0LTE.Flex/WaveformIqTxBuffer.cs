@@ -24,6 +24,7 @@ public sealed class WaveformIqTxBuffer
     private int _tail;
     private int _count;
     private bool _completed;
+    private long _unconfirmedPadPairs;
 
     /// <summary>Creates a buffer holding up to <paramref name="capacityPairs"/> complex samples.</summary>
     public WaveformIqTxBuffer(int capacityPairs)
@@ -32,7 +33,12 @@ public sealed class WaveformIqTxBuffer
         _ring = new float[capacityPairs * 2];
     }
 
-    /// <summary>Complex samples the radio pulled but the ring could not supply (a starved burst).</summary>
+    /// <summary>Complex samples the producer failed to supply <b>while more real IQ was still owed</b>
+    /// — a genuine mid-stream underrun, which puts zeros between real samples on air (a phase
+    /// discontinuity: the failure the 0.5.0 interlock fix exists to catch). The benign zero-pad of a
+    /// burst's <i>drained tail</i> — after the last real sample and before unkey, while the radio keeps
+    /// pulling transmit buffers at 187.5/s — does not count: it is silence between the burst and unkey,
+    /// not a discontinuity. See <see cref="TakePacket"/> for how the two are told apart.</summary>
     public long SamplesStarved { get; private set; }
 
     /// <summary>Whether every queued sample has been taken. The signal a waveform uses to
@@ -94,6 +100,16 @@ public sealed class WaveformIqTxBuffer
     /// <summary>Fills <paramref name="destination"/> (a whole-pairs span the radio asked for) with the
     /// next queued IQ, zero-padding any shortfall so the carrier stays continuous. Called once per
     /// radio TX-buffer request.</summary>
+    /// <remarks>
+    /// A zero-pad only becomes a <see cref="SamplesStarved">starve</see> once a later packet delivers
+    /// real IQ — that is what proves the pad went out <i>between</i> real samples (a mid-stream
+    /// underrun) rather than after the last one. So the shortfall is held pending and confirmed
+    /// retroactively when real data follows; the drained tail before unkey never sees more real data,
+    /// so it is discarded (<see cref="DiscardPendingStarve"/>) rather than counted. Counting it at the
+    /// moment of the shortfall — as this did before — inflated a clean, fully-delivered burst by the
+    /// whole drain-then-unkey window (measured: 0 became ~4600 once the reflected pulls were paced at
+    /// the radio's real 187.5/s).
+    /// </remarks>
     public void TakePacket(Span<float> destination)
     {
         lock (_lock)
@@ -109,13 +125,35 @@ public sealed class WaveformIqTxBuffer
             }
 
             _count -= take;
+
+            if (take > 0 && _unconfirmedPadPairs > 0)
+            {
+                // Real IQ followed the pad we were holding: it went to air between real samples, so
+                // it was a genuine mid-stream underrun. Confirm it now.
+                SamplesStarved += _unconfirmedPadPairs;
+                _unconfirmedPadPairs = 0;
+            }
+
             if (take < destination.Length)
             {
                 destination[take..].Clear();
-                SamplesStarved += (destination.Length - take) / 2;
+                // Hold this packet's shortfall rather than counting it yet — it is a starve only if
+                // more real IQ arrives after it (above). If none does, it is the benign drained tail.
+                _unconfirmedPadPairs += (destination.Length - take) / 2;
             }
 
             System.Threading.Monitor.PulseAll(_lock);           // unblock a producer waiting on space
+        }
+    }
+
+    /// <summary>Drops any zero-pad held pending confirmation in <see cref="TakePacket"/>. The sink calls
+    /// this once a burst's tail has gone out and it stops answering, so one burst's benign drained-tail
+    /// padding is never mistaken for a mid-stream underrun at the start of the next.</summary>
+    internal void DiscardPendingStarve()
+    {
+        lock (_lock)
+        {
+            _unconfirmedPadPairs = 0;
         }
     }
 
