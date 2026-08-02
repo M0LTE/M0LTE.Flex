@@ -77,6 +77,8 @@ public sealed class FlexClient : IAsyncDisposable
     /// <summary>This client's handle (the <c>H…</c> prologue line, a 32-bit hex value).</summary>
     public string Handle { get; private set; } = "";
 
+    private FlexReferenceStatus? _lastReference;
+
     /// <summary>The local UDP port the radio streams VITA-49 to (valid after
     /// <see cref="InitUdpAsync"/>).</summary>
     public int LocalUdpPort { get; private set; }
@@ -90,6 +92,13 @@ public sealed class FlexClient : IAsyncDisposable
 
     /// <summary>Raised for every object-status update (<c>S…</c>).</summary>
     public event Action<FlexStatusUpdate>? StatusUpdated;
+
+    /// <summary>
+    /// Raised when the radio's frequency-reference state changes — source configured, source in
+    /// use, PLL lock or calibration correction. Not raised for status updates that leave it
+    /// unchanged, so a consumer can drive a UI straight off it.
+    /// </summary>
+    public event Action<FlexReferenceStatus>? ReferenceChanged;
 
     /// <summary>Raised for every informational/warning/fault message (<c>M…</c>): the
     /// sender handle and the message text.</summary>
@@ -224,6 +233,50 @@ public sealed class FlexClient : IAsyncDisposable
     {
         await SendCommandExpectOkAsync("keepalive enable", cancellation).ConfigureAwait(false);
         _keepalive = Task.Run(() => KeepaliveLoopAsync(interval));
+    }
+
+    /// <summary>
+    /// The radio's frequency-reference state, from the <c>radio</c> and <c>radio oscillator</c>
+    /// status objects. <see cref="FlexReferenceStatus.Unknown"/> until the radio has said —
+    /// which needs a <c>sub radio all</c> subscription.
+    /// </summary>
+    public FlexReferenceStatus Reference
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return ReadReference();
+            }
+        }
+    }
+
+    /// <summary>Reads the reference state; caller holds <c>_stateLock</c>.</summary>
+    private FlexReferenceStatus ReadReference()
+    {
+        _state.TryGetValue("radio oscillator", out Dictionary<string, string>? osc);
+        _state.TryGetValue("radio", out Dictionary<string, string>? radio);
+        if (osc is null && radio is null)
+        {
+            return FlexReferenceStatus.Unknown;
+        }
+
+        string settingRaw = osc?.GetValueOrDefault("setting") ?? "";
+        string stateRaw = osc?.GetValueOrDefault("state") ?? "";
+        bool locked = osc?.GetValueOrDefault("locked") is "1" or "true";
+        int? ppb = int.TryParse(
+            radio?.GetValueOrDefault("freq_error_ppb"),
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out int parsed) ? parsed : null;
+
+        return new FlexReferenceStatus(
+            FlexReferenceStatus.ParseSource(settingRaw),
+            FlexReferenceStatus.ParseSource(stateRaw),
+            locked,
+            ppb,
+            settingRaw,
+            stateRaw);
     }
 
     /// <summary>Gets a snapshot of an object's current state, if known.</summary>
@@ -463,6 +516,7 @@ public sealed class FlexClient : IAsyncDisposable
         }
 
         Dictionary<string, string> current;
+        FlexReferenceStatus? reference = null;
         lock (_stateLock)
         {
             if (removed)
@@ -485,6 +539,18 @@ public sealed class FlexClient : IAsyncDisposable
 
                 current = new Dictionary<string, string>(existing, StringComparer.Ordinal);
             }
+
+            // Read inside the lock so the snapshot matches the state that produced it.
+            if (objectName is "radio" or "radio oscillator")
+            {
+                reference = ReadReference();
+            }
+        }
+
+        if (reference is not null && reference != _lastReference)
+        {
+            _lastReference = reference;
+            ReferenceChanged?.Invoke(reference);
         }
 
         StatusUpdated?.Invoke(new FlexStatusUpdate(handle, objectName, changes, current));
