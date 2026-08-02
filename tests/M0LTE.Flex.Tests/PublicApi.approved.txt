@@ -49,9 +49,11 @@ namespace M0LTE.Flex
     {
         public string Handle { get; }
         public int LocalUdpPort { get; }
+        public M0LTE.Flex.FlexReferenceStatus Reference { get; }
         public string Version { get; }
         public System.Action<byte[]>? VitaSendHook { get; set; }
         public event System.Action<string, string>? MessageReceived;
+        public event System.Action<M0LTE.Flex.FlexReferenceStatus>? ReferenceChanged;
         public event System.Action<M0LTE.Flex.FlexStatusUpdate>? StatusUpdated;
         public event System.Action<M0LTE.Flex.VitaPacket>? VitaPacketReceived;
         public void DeliverVitaPacket(byte[] packet) { }
@@ -137,6 +139,14 @@ namespace M0LTE.Flex
         public static double Scale(short raw, string unit) { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexMeters> SubscribeAsync(M0LTE.Flex.FlexClient client, System.Threading.CancellationToken cancellation = default) { }
     }
+    public enum FlexOscillatorSource
+    {
+        Unknown = 0,
+        Tcxo = 1,
+        Ocxo = 2,
+        External = 3,
+        Gpsdo = 4,
+    }
     public sealed class FlexProtocolException : System.Exception
     {
         public FlexProtocolException(string message) { }
@@ -159,6 +169,21 @@ namespace M0LTE.Flex
         public int Port { get; init; }
         public string Serial { get; init; }
         public string Version { get; init; }
+    }
+    public sealed class FlexReferenceStatus : System.IEquatable<M0LTE.Flex.FlexReferenceStatus>
+    {
+        public FlexReferenceStatus(M0LTE.Flex.FlexOscillatorSource Setting, M0LTE.Flex.FlexOscillatorSource State, bool Locked, int? FreqErrorPpb, string SettingRaw = "", string StateRaw = "") { }
+        public bool ConfiguredSourceNotInUse { get; }
+        public int? FreqErrorPpb { get; init; }
+        public bool IsHealthy { get; }
+        public bool Locked { get; init; }
+        public M0LTE.Flex.FlexOscillatorSource Setting { get; init; }
+        public string SettingRaw { get; init; }
+        public M0LTE.Flex.FlexOscillatorSource State { get; init; }
+        public string StateRaw { get; init; }
+        public static M0LTE.Flex.FlexReferenceStatus Unknown { get; }
+        public string Describe() { }
+        public static M0LTE.Flex.FlexOscillatorSource ParseSource(string? value) { }
     }
     public readonly struct FlexResult : System.IEquatable<M0LTE.Flex.FlexResult>
     {
