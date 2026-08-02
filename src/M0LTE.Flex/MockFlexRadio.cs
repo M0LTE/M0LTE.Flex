@@ -114,6 +114,19 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private int _txFilterHigh = DefaultTransmitFilterHighHz;
     private int _rfPower = 100;
 
+    /// <summary>The operator's power ceiling the modelled radio enforces. A larger
+    /// <c>rfpower</c> is rejected outright, as a FLEX-6500 does (fw 4.2.20, error
+    /// <c>0x50000048</c>) — it does not clamp and it does not rescale.</summary>
+    public int MaxPowerLevel { get; set; } = 100;
+
+    /// <summary>Models a client the radio does not treat as a station: <c>transmit set
+    /// rfpower</c> is answered <c>err=0</c> and discarded. Measured on a FLEX-6500 — and
+    /// indistinguishable from success without reading the value back.</summary>
+    public bool DiscardRfPowerWrites { get; set; }
+
+    /// <summary>The transmit RF power the modelled radio is holding.</summary>
+    public int RfPower => _rfPower;
+
     // The transmitter's audio source. A real 6500 defaults to the mic, NOT to DAX — so a client that
     // sets up DAX streams and transmits without selecting DAX puts nothing on air, with every
     // command returning err=0. Modelled at its real default so that mistake is catchable offline.
@@ -537,7 +550,19 @@ public sealed class MockFlexRadio : IAsyncDisposable
                 case "dax": _transmitDax = number != 0; break;
                 case "filter_low": _txFilterLow = number; break;
                 case "filter_high": _txFilterHigh = Math.Min(number, MaxTransmitFilterHighHz); break;
-                case "rfpower": _rfPower = number; break;
+                case "rfpower":
+                    if (number > MaxPowerLevel)
+                    {
+                        await WriteLineAsync($"R{seq}|50000048|").ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (!DiscardRfPowerWrites)
+                    {
+                        _rfPower = number;
+                    }
+
+                    break;
                 default: break;
             }
         }
@@ -548,7 +573,7 @@ public sealed class MockFlexRadio : IAsyncDisposable
 
     private Task SendTransmitStatusAsync() => WriteLineAsync(
         $"S{HandleHex}|transmit lo={_txFilterLow} hi={_txFilterHigh} tx_filter_changes_allowed=1 "
-        + $"rfpower={_rfPower} max_power_level=100 tune=0 tx_slice_mode={_sliceMode} "
+        + $"rfpower={_rfPower} max_power_level={MaxPowerLevel} tune=0 tx_slice_mode={_sliceMode} "
         + $"dax={(_transmitDax ? 1 : 0)} mic_selection=PC");
 
     /// <summary>Whether the modelled transmitter is taking its audio from DAX.</summary>

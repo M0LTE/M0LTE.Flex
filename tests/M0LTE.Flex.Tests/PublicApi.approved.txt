@@ -205,6 +205,8 @@ namespace M0LTE.Flex
         public M0LTE.Flex.FlexClient Client { get; }
         public M0LTE.Flex.DaxStreamFormat Format { get; }
         public M0LTE.Flex.FlexResult? HeadlessBindResult { get; }
+        public int? MaxPowerLevel { get; }
+        public int? RfPowerApplied { get; }
         public uint RxStreamId { get; }
         public string SliceIndex { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
@@ -230,6 +232,7 @@ namespace M0LTE.Flex
         public string Frequency { get; init; }
         public int Gain { get; init; }
         public bool Keepalive { get; init; }
+        public int? RfPower { get; init; }
         public bool SelectDaxAsTransmitSource { get; init; }
         public System.TimeSpan SetupTimeout { get; init; }
         public string SliceLetter { get; init; }
@@ -322,6 +325,9 @@ namespace M0LTE.Flex
         public System.Collections.Generic.IReadOnlyList<float> CapturedTxSamples { get; }
         public System.Collections.Generic.IReadOnlyList<float> CapturedWaveformIq { get; }
         public System.Collections.Generic.IReadOnlyList<string> CommandLog { get; }
+        public bool DiscardRfPowerWrites { get; set; }
+        public int MaxPowerLevel { get; set; }
+        public int RfPower { get; }
         public System.Action<byte[]>? RxDelivery { get; set; }
         public int TcpPort { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
