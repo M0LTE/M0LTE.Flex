@@ -392,9 +392,17 @@ public sealed class FlexStation : IAsyncDisposable
         return clientHandle;
     }
 
+    /// <summary>
+    /// Subscribes to radio-level status, which is what carries the frequency-reference objects
+    /// behind <see cref="FlexClient.Reference"/>. Without it those objects are never sent and
+    /// the property reads Unknown forever — a typed surface nothing ever fills.
+    /// </summary>
+    private void SubscribeRadioStatus() => _client.SendCommandNoWait("sub radio all");
+
     private async Task FindSliceAsync(
         FlexStationOptions options, string clientHandle, CancellationToken cancellation)
     {
+        SubscribeRadioStatus();
         _client.SendCommandNoWait("sub slice all");
         string sliceObject = await WaitForObjectAsync(
             "slice ",
@@ -410,6 +418,7 @@ public sealed class FlexStation : IAsyncDisposable
     {
         // Subscribe so the created slice's status object (carrying our client_handle) reaches
         // us, then create the slice on the working frequency/antenna/mode.
+        SubscribeRadioStatus();
         _client.SendCommandNoWait("sub slice all");
         await _client.SendCommandExpectOkAsync(
             $"slice create freq={options.Frequency} ant={options.Antenna} "
