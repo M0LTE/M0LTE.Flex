@@ -77,6 +77,29 @@ public sealed record FlexStationOptions
     /// </remarks>
     public int? TransmitFilterHighHz { get; init; }
 
+    /// <summary>
+    /// Transmit RF power, 0–100, applied with <c>transmit set rfpower=</c>. Null (the default)
+    /// leaves the radio's own setting alone.
+    /// </summary>
+    /// <remarks>
+    /// <para>On the 6000 series the PA is 100 W (<c>slice N max_internal_pa_power</c>), so the
+    /// number is very close to watts.</para>
+    /// <para><b>Only a station client with a slice can set this.</b> Measured on a FLEX-6500
+    /// (fw 4.2.20, 2026-08-02): an unbound command client's <c>transmit set rfpower=N</c> returns
+    /// <c>err=0</c> and is silently discarded — the value never moves — because RF power is held
+    /// per station, and a client with no station context has nowhere to put it. Registering as a
+    /// GUI client makes <c>transmit rfpower</c> report that station's own value. The headless
+    /// path here registers as a GUI client and creates a slice, so it is one of the few things
+    /// that <i>can</i> set it.</para>
+    /// <para>The radio rejects a value above <c>transmit max_power_level</c> outright
+    /// (<c>0x50000048</c>) rather than clamping or rescaling — so asking for more than the
+    /// operator's ceiling gets an error, not a quiet reduction. <see cref="FlexStation.RfPowerApplied"/>
+    /// reports what actually took effect.</para>
+    /// <para>It is a <b>global</b> radio setting in the same sense as the transmit filter: it
+    /// persists after teardown and affects what this station transmits thereafter.</para>
+    /// </remarks>
+    public int? RfPower { get; init; }
+
     /// <summary>Enable keepalive + ping so a wedged radio is detected (default true).</summary>
     public bool Keepalive { get; init; } = true;
 
@@ -181,6 +204,7 @@ public sealed class FlexStation : IAsyncDisposable
         string clientHandle = await station.BindClientAsync(options, cancellation).ConfigureAwait(false);
         await station.FindSliceAsync(options, clientHandle, cancellation).ConfigureAwait(false);
         await station.EnableDaxAsync(options, cancellation).ConfigureAwait(false);
+        await station.ApplyRfPowerAsync(options, cancellation).ConfigureAwait(false);
 
         await station.FinishAsync(options, cancellation).ConfigureAwait(false);
         return station;
@@ -234,6 +258,10 @@ public sealed class FlexStation : IAsyncDisposable
 
         // 7. Read back (and optionally set) the filter that governs transmitted audio bandwidth.
         await station.ApplyTransmitFilterAsync(options, cancellation).ConfigureAwait(false);
+
+        // 8. Transmit power. After the slice exists, because the radio holds power per station
+        //    and there is nothing to hold it against until then.
+        await station.ApplyRfPowerAsync(options, cancellation).ConfigureAwait(false);
 
         await station.FinishAsync(options, cancellation).ConfigureAwait(false);
         return station;
@@ -308,6 +336,86 @@ public sealed class FlexStation : IAsyncDisposable
     /// <summary>The transmit passband the radio reports, as (low, high) in Hz — what actually limits
     /// transmitted audio bandwidth. Null if the radio never reported it.</summary>
     public (int Low, int High)? TransmitFilter { get; private set; }
+
+    /// <summary>The transmit RF power (0–100) the radio reports for this station after setup, whether
+    /// or not <see cref="FlexStationOptions.RfPower"/> asked for one. Null if it never reported.</summary>
+    public int? RfPowerApplied { get; private set; }
+
+    /// <summary>The operator's power ceiling the radio reports (<c>max_power_level</c>). A request
+    /// above this is rejected by the radio, not clamped. Null if it never reported.</summary>
+    public int? MaxPowerLevel { get; private set; }
+
+    /// <summary>
+    /// Sets transmit RF power if asked to, then reads back what is actually in force.
+    /// </summary>
+    /// <remarks>
+    /// Throws rather than shrugging when the radio rejects the value: a station that asked for 30 W,
+    /// was refused, and then transmitted at whatever was already set is worse than one that will not
+    /// start. The read-back happens either way, so an unset power is still reported rather than
+    /// inherited invisibly from whatever last touched the radio.
+    /// </remarks>
+    private async Task ApplyRfPowerAsync(FlexStationOptions options, CancellationToken cancellation)
+    {
+        await TryBestEffortAsync("sub tx all", cancellation).ConfigureAwait(false);
+        ReadPowerStatus();
+
+        if (options.RfPower is not int want)
+        {
+            return;
+        }
+
+        if (MaxPowerLevel is int ceiling && want > ceiling)
+        {
+            throw new FlexProtocolException(
+                $"transmit power {want} is above this radio's Max Power Level of {ceiling}. "
+                + "The radio rejects a power above that ceiling rather than reducing it, so raise "
+                + "the limit at the rig (Settings → Transmit → Max Power Level) or ask for less.");
+        }
+
+        await _client.SendCommandExpectOkAsync($"transmit set rfpower={want}", cancellation)
+            .ConfigureAwait(false);
+
+        long deadline = Environment.TickCount64 + (long)options.SetupTimeout.TotalMilliseconds;
+        while (Environment.TickCount64 <= deadline)
+        {
+            ReadPowerStatus();
+            if (RfPowerApplied == want)
+            {
+                return;
+            }
+
+            await Task.Delay(20, cancellation).ConfigureAwait(false);
+        }
+
+        // The command is accepted and discarded for a client the radio does not consider a station
+        // — measured, and impossible to tell from success without reading the value back.
+        throw new FlexProtocolException(
+            $"asked for transmit power {want} but the radio still reports "
+            + $"{(RfPowerApplied is int got ? got.ToString(CultureInfo.InvariantCulture) : "nothing")}. "
+            + "RF power is held per station; a client the radio does not treat as one has its "
+            + "request accepted and discarded.");
+    }
+
+    private void ReadPowerStatus()
+    {
+        if (!_client.TryFindObject("transmit", _ => true, out string name)
+            || !_client.TryGetObject(name, out IReadOnlyDictionary<string, string> transmit))
+        {
+            return;
+        }
+
+        if (transmit.TryGetValue("rfpower", out string? power)
+            && int.TryParse(power, NumberStyles.Integer, CultureInfo.InvariantCulture, out int rf))
+        {
+            RfPowerApplied = rf;
+        }
+
+        if (transmit.TryGetValue("max_power_level", out string? max)
+            && int.TryParse(max, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ceiling))
+        {
+            MaxPowerLevel = ceiling;
+        }
+    }
 
     /// <summary>
     /// Sets the transmit filter if asked to, then reads back whatever is in force.
