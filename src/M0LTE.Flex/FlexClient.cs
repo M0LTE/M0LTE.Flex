@@ -100,6 +100,25 @@ public sealed class FlexClient : IAsyncDisposable
     /// </summary>
     public event Action<FlexReferenceStatus>? ReferenceChanged;
 
+    /// <summary>
+    /// Raised once when the session ends for any reason other than disposal — the radio
+    /// rebooting, the network dropping, the radio closing the connection.
+    /// </summary>
+    /// <remarks>
+    /// Without this a long-running consumer has no way to know: commands begin failing and
+    /// audio simply stops, but nothing says the session is gone, so a headless station can sit
+    /// with a dead socket indefinitely. Handlers should be cheap and must not block the read
+    /// loop's teardown.
+    /// </remarks>
+    public event Action? Disconnected;
+
+    /// <summary>False once the session has ended; see <see cref="Disconnected"/>.</summary>
+    public bool IsConnected => !_disconnected && !_lifetime.IsCancellationRequested;
+
+    private int _disconnectedFlag;
+
+    private bool _disconnected => Volatile.Read(ref _disconnectedFlag) != 0;
+
     /// <summary>Raised for every informational/warning/fault message (<c>M…</c>): the
     /// sender handle and the message text.</summary>
     public event Action<string, string>? MessageReceived;
@@ -387,6 +406,14 @@ public sealed class FlexClient : IAsyncDisposable
             _prologueComplete.TrySetException(
                 new FlexProtocolException("connection closed before prologue completed"));
             FailPending(new FlexProtocolException("connection closed"));
+
+            // Deliberate disposal is not a disconnection worth telling anyone about; anything
+            // else is. Fired at most once, whichever way the loop ended.
+            if (!_lifetime.IsCancellationRequested
+                && Interlocked.Exchange(ref _disconnectedFlag, 1) == 0)
+            {
+                Disconnected?.Invoke();
+            }
         }
     }
 

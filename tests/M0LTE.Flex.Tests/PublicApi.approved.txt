@@ -48,10 +48,12 @@ namespace M0LTE.Flex
     public sealed class FlexClient : System.IAsyncDisposable
     {
         public string Handle { get; }
+        public bool IsConnected { get; }
         public int LocalUdpPort { get; }
         public M0LTE.Flex.FlexReferenceStatus Reference { get; }
         public string Version { get; }
         public System.Action<byte[]>? VitaSendHook { get; set; }
+        public event System.Action? Disconnected;
         public event System.Action<string, string>? MessageReceived;
         public event System.Action<M0LTE.Flex.FlexReferenceStatus>? ReferenceChanged;
         public event System.Action<M0LTE.Flex.FlexStatusUpdate>? StatusUpdated;
