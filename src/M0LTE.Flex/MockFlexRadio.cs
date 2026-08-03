@@ -66,6 +66,13 @@ public sealed class MockFlexRadio : IAsyncDisposable
     /// silently clamped, not rejected (measured on M0LTE's 6500, 2026-07-26).</summary>
     public const int MaxTransmitFilterHighHz = 10000;
 
+    /// <summary>The slice receive passband a fresh DIGU slice comes up on — an ordinary data
+    /// filter, and narrow enough that a client wanting more than ~3 kHz has to ask.</summary>
+    public const int DefaultSliceFilterLowHz = 100;
+
+    /// <inheritdoc cref="DefaultSliceFilterLowHz" />
+    public const int DefaultSliceFilterHighHz = 2800;
+
     /// <summary>The factory transmit passband — an ordinary 3 kHz SSB filter. This, not the
     /// waveform's own <c>tx_filter</c>, is what caps occupied bandwidth on air, so a waveform client
     /// that never raises it transmits 3 kHz however wide its IQ is.</summary>
@@ -113,6 +120,23 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private int _txFilterLow;
     private int _txFilterHigh = DefaultTransmitFilterHighHz;
     private int _rfPower = 100;
+
+    // The modelled slice receive passband, reported on the slice object as filter_lo/filter_hi
+    // and moved by `slice set <n> filter_lo= filter_hi=`.
+    private int _sliceFilterLow = DefaultSliceFilterLowHz;
+    private int _sliceFilterHigh = DefaultSliceFilterHighHz;
+
+    /// <summary>
+    /// A ceiling this modelled radio applies to a slice's receive filter high cut, or null (the
+    /// default) for a radio that takes whatever it is given.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not a constant: unlike the transmit filter's 10 kHz clamp, nobody has measured
+    /// whether a real slice limits its receive width. Modelling "no limit" by default keeps the mock
+    /// from asserting something unmeasured, while letting a test set one and exercise a client's
+    /// handling of a radio that will not go as wide as asked.
+    /// </remarks>
+    public int? MaxSliceFilterHighHz { get; set; }
 
     /// <summary>The operator's power ceiling the modelled radio enforces. A larger
     /// <c>rfpower</c> is rejected outright, as a FLEX-6500 does (fw 4.2.20, error
@@ -370,7 +394,8 @@ public sealed class MockFlexRadio : IAsyncDisposable
                 // until `slice create` runs (below).
                 await WriteLineAsync(
                     $"S{HandleHex}|slice 0 index_letter={_sliceLetter} client_handle=0x{HandleHex} "
-                    + "in_use=1 mode=DIGU RF_frequency=14.100000").ConfigureAwait(false);
+                    + "in_use=1 mode=DIGU RF_frequency=14.100000 "
+                    + $"filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}").ConfigureAwait(false);
             }
         }
         else if (cmd.StartsWith("slice create", StringComparison.Ordinal))
@@ -390,7 +415,8 @@ public sealed class MockFlexRadio : IAsyncDisposable
             await WriteLineAsync($"R{seq}|0|0").ConfigureAwait(false);
             await WriteLineAsync(
                 $"S{HandleHex}|slice 0 index_letter={_sliceLetter} client_handle=0x{HandleHex} "
-                + $"in_use=1 mode={_sliceMode} RF_frequency={_sliceFrequency}").ConfigureAwait(false);
+                + $"in_use=1 mode={_sliceMode} RF_frequency={_sliceFrequency} "
+                + $"filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("slice t ", StringComparison.Ordinal))
         {
@@ -455,6 +481,32 @@ public sealed class MockFlexRadio : IAsyncDisposable
                 string mode = cmd[(modeAt + 5)..].Split(' ')[0];
                 _sliceMode = mode;
                 await WriteLineAsync($"S{HandleHex}|slice 0 mode={mode}").ConfigureAwait(false);
+            }
+
+            // The receive passband, likewise reflected rather than merely acknowledged — a client
+            // that widens its filter and reads back to confirm is doing the right thing, and has to
+            // be able to tell "the radio moved it" from "the radio said err=0 and did nothing".
+            string? filterLo = ParseArg(cmd, "filter_lo");
+            string? filterHi = ParseArg(cmd, "filter_hi");
+            if (filterLo is not null && int.TryParse(filterLo, out int lowHz))
+            {
+                _sliceFilterLow = lowHz;
+            }
+
+            if (filterHi is not null && int.TryParse(filterHi, out int highHz))
+            {
+                // Clamped rather than refused where a ceiling is modelled at all, mirroring how the
+                // transmit filter behaves — the failure mode a client has to notice is a silent one.
+                _sliceFilterHigh = MaxSliceFilterHighHz is int ceiling
+                    ? Math.Min(highHz, ceiling)
+                    : highHz;
+            }
+
+            if (filterLo is not null || filterHi is not null)
+            {
+                await WriteLineAsync(
+                    $"S{HandleHex}|slice 0 filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}")
+                    .ConfigureAwait(false);
             }
         }
         else if (cmd.StartsWith("waveform create", StringComparison.Ordinal))
@@ -581,6 +633,9 @@ public sealed class MockFlexRadio : IAsyncDisposable
 
     /// <summary>The transmit passband the mock currently models, as (low, high) in Hz.</summary>
     public (int Low, int High) TransmitFilter => (_txFilterLow, _txFilterHigh);
+
+    /// <summary>The slice receive passband the mock currently models, as (low, high) in Hz.</summary>
+    public (int Low, int High) SliceFilter => (_sliceFilterLow, _sliceFilterHigh);
 
     /// <summary>The <c>meter list</c> reply the mock serves — a real FLEX-6500's transmit
     /// meter set, ids and all.</summary>

@@ -206,6 +206,11 @@ namespace M0LTE.Flex
         public M0LTE.Flex.DaxStreamFormat Format { get; }
         public M0LTE.Flex.FlexResult? HeadlessBindResult { get; }
         public int? MaxPowerLevel { get; }
+        [System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Low",
+                "High"})]
+        public System.ValueTuple<int, int>? ReceiveFilter { get; }
+        public string? ReceiveFilterWarning { get; }
         public int? RfPowerApplied { get; }
         public uint RxStreamId { get; }
         public string SliceIndex { get; }
@@ -232,6 +237,8 @@ namespace M0LTE.Flex
         public string Frequency { get; init; }
         public int Gain { get; init; }
         public bool Keepalive { get; init; }
+        public int? ReceiveFilterHighHz { get; init; }
+        public int? ReceiveFilterLowHz { get; init; }
         public int? RfPower { get; init; }
         public bool SelectDaxAsTransmitSource { get; init; }
         public System.TimeSpan SetupTimeout { get; init; }
@@ -318,6 +325,8 @@ namespace M0LTE.Flex
     }
     public sealed class MockFlexRadio : System.IAsyncDisposable
     {
+        public const int DefaultSliceFilterHighHz = 2800;
+        public const int DefaultSliceFilterLowHz = 100;
         public const int MaxTransmitFilterHighHz = 10000;
         public const string MeterListReply = @"meter 1.src=COD-#1.num=1#1.nam=MICPEAK#1.low=-150.0#1.hi=20.0#1.desc=Signal strength of MIC output in CODEC#1.unit=dBFS#1.fps=40#3.src=TX-#3.num=5#3.nam=HWALC#3.low=-150.0#3.hi=20.0#3.desc=Voltage present at the Hardware ALC RCA Plug#3.unit=dBFS#3.fps=20#4.src=RAD#4.num=208#4.nam=+13.8A#4.low=10.5#4.hi=15.0#4.desc=Main radio input voltage before fuse#4.unit=Volts#4.fps=0#6.src=TX-#6.num=1#6.nam=FWDPWR#6.low=0.0#6.hi=53.0#6.desc=RF Power Forward#6.unit=dBm#6.fps=20#7.src=TX-#7.num=2#7.nam=REFPWR#7.low=0.0#7.hi=53.0#7.desc=RF Power Reflected#7.unit=dBm#7.fps=20#8.src=TX-#8.num=3#8.nam=SWR#8.low=1.0#8.hi=999.0#8.desc=RF SWR#8.unit=SWR#8.fps=20#9.src=TX-#9.num=4#9.nam=PATEMP#9.low=0.0#9.hi=120.0#9.desc=PA Temperature#9.unit=degC#9.fps=0#";
         public const uint MeterStreamId = 1792u;
@@ -327,8 +336,13 @@ namespace M0LTE.Flex
         public System.Collections.Generic.IReadOnlyList<string> CommandLog { get; }
         public bool DiscardRfPowerWrites { get; set; }
         public int MaxPowerLevel { get; set; }
+        public int? MaxSliceFilterHighHz { get; set; }
         public int RfPower { get; }
         public System.Action<byte[]>? RxDelivery { get; set; }
+        [System.Runtime.CompilerServices.TupleElementNames(new string[] {
+                "Low",
+                "High"})]
+        public System.ValueTuple<int, int> SliceFilter { get; }
         public int TcpPort { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "Low",

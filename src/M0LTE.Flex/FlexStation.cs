@@ -78,6 +78,31 @@ public sealed record FlexStationOptions
     public int? TransmitFilterHighHz { get; init; }
 
     /// <summary>
+    /// Low and high cut of the <b>slice's receive</b> filter (Hz), applied with
+    /// <c>slice set &lt;n&gt; filter_lo= filter_hi=</c>. Null (the default) leaves the slice's own
+    /// setting alone; either may be set without the other. Headless only — in attach mode the
+    /// slice belongs to SmartSDR.
+    /// </summary>
+    /// <remarks>
+    /// <para>The receive counterpart of <see cref="TransmitFilterHighHz"/>, and the other half of
+    /// making DAX carry more than ~3 kHz: transmitted bandwidth is capped by the global transmit
+    /// filter, but what reaches DAX-RX is capped here, per slice. A slice left on an ordinary
+    /// 3 kHz data filter hands you nothing above 3 kHz however wide the signal is.</para>
+    /// <para>Unlike the transmit filter this is <b>slice</b> state, so it goes away with the slice
+    /// rather than persisting on the radio — a headless station that creates its own slice is
+    /// setting its own filter, not changing what other clients hear.</para>
+    /// <para><b>The radio's ceiling here is not measured.</b> The transmit filter clamps at 10 kHz;
+    /// whether a slice's receive filter clamps at the same width, somewhere else, or not at all is
+    /// unknown, so nothing is assumed: the value is read back and
+    /// <see cref="FlexStation.ReceiveFilterWarning"/> says so if the radio did not land where it
+    /// was asked to.</para>
+    /// </remarks>
+    public int? ReceiveFilterLowHz { get; init; }
+
+    /// <inheritdoc cref="ReceiveFilterLowHz" />
+    public int? ReceiveFilterHighHz { get; init; }
+
+    /// <summary>
     /// Transmit RF power, 0–100, applied with <c>transmit set rfpower=</c>. Null (the default)
     /// leaves the radio's own setting alone.
     /// </summary>
@@ -259,6 +284,11 @@ public sealed class FlexStation : IAsyncDisposable
         // 7. Read back (and optionally set) the filter that governs transmitted audio bandwidth.
         await station.ApplyTransmitFilterAsync(options, cancellation).ConfigureAwait(false);
 
+        // 7b. The same question on the receive side, which is per-slice rather than global: a
+        //     slice on an ordinary 3 kHz data filter delivers nothing wider to DAX-RX, whatever
+        //     the transmit filter allows out.
+        await station.ApplyReceiveFilterAsync(options, cancellation).ConfigureAwait(false);
+
         // 8. Transmit power. After the slice exists, because the radio holds power per station
         //    and there is nothing to hold it against until then.
         await station.ApplyRfPowerAsync(options, cancellation).ConfigureAwait(false);
@@ -336,6 +366,20 @@ public sealed class FlexStation : IAsyncDisposable
     /// <summary>The transmit passband the radio reports, as (low, high) in Hz — what actually limits
     /// transmitted audio bandwidth. Null if the radio never reported it.</summary>
     public (int Low, int High)? TransmitFilter { get; private set; }
+
+    /// <summary>The slice's receive passband as the radio reports it, (low, high) in Hz — what limits
+    /// the bandwidth reaching DAX-RX. Null if the radio never reported it.</summary>
+    public (int Low, int High)? ReceiveFilter { get; private set; }
+
+    /// <summary>A human-readable warning if the slice's receive filter did not end up where
+    /// <see cref="FlexStationOptions.ReceiveFilterLowHz"/>/<see cref="FlexStationOptions.ReceiveFilterHighHz"/>
+    /// asked, else null. Setup does not throw over it: a narrower passband than asked for still
+    /// receives, just less of the band.</summary>
+    /// <remarks>
+    /// This exists because the radio's limit on receive-filter width is not measured, unlike the
+    /// transmit filter's 10 kHz clamp. Rather than encode a guess, ask and report what came back.
+    /// </remarks>
+    public string? ReceiveFilterWarning { get; private set; }
 
     /// <summary>The transmit RF power (0–100) the radio reports for this station after setup, whether
     /// or not <see cref="FlexStationOptions.RfPower"/> asked for one. Null if it never reported.</summary>
@@ -458,6 +502,89 @@ public sealed class FlexStation : IAsyncDisposable
 
             await Task.Delay(20, cancellation).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Sets the slice's receive filter if asked to, then reads back whatever is in force.
+    /// </summary>
+    /// <remarks>
+    /// The receive half of <see cref="ApplyTransmitFilterAsync"/>, and read back for the same
+    /// reason: a slice on an ordinary 3 kHz data filter delivers nothing above 3 kHz to DAX-RX
+    /// however wide the signal on the air is. Where the transmit path knows its ceiling (10 kHz,
+    /// measured), this one does not, so a read-back that disagrees with the request becomes
+    /// <see cref="ReceiveFilterWarning"/> rather than an exception or a silent success.
+    /// </remarks>
+    private async Task ApplyReceiveFilterAsync(FlexStationOptions options, CancellationToken cancellation)
+    {
+        if (options.ReceiveFilterLowHz is int lowWanted && options.ReceiveFilterHighHz is int highWanted
+            && lowWanted >= highWanted)
+        {
+            ReceiveFilterWarning =
+                $"receive filter low cut ({lowWanted} Hz) is not below the high cut ({highWanted} Hz); "
+                + "the slice's own filter was left alone";
+            return;
+        }
+
+        var parts = new List<string>(2);
+        if (options.ReceiveFilterLowHz is int low)
+        {
+            parts.Add($"filter_lo={low}");
+        }
+
+        if (options.ReceiveFilterHighHz is int high)
+        {
+            parts.Add($"filter_hi={high}");
+        }
+
+        if (parts.Count > 0)
+        {
+            await TryBestEffortAsync(
+                $"slice set {SliceIndex} {string.Join(' ', parts)}", cancellation).ConfigureAwait(false);
+        }
+
+        long deadline = Environment.TickCount64 + (long)options.SetupTimeout.TotalMilliseconds;
+        while (true)
+        {
+            if (_client.TryFindObject($"slice {SliceIndex}", _ => true, out string name)
+                && _client.TryGetObject(name, out IReadOnlyDictionary<string, string> slice)
+                && slice.TryGetValue("filter_lo", out string? lo)
+                && slice.TryGetValue("filter_hi", out string? hi)
+                && int.TryParse(lo, NumberStyles.Integer, CultureInfo.InvariantCulture, out int lowHz)
+                && int.TryParse(hi, NumberStyles.Integer, CultureInfo.InvariantCulture, out int highHz))
+            {
+                ReceiveFilter = (lowHz, highHz);
+                bool lowAsAsked = options.ReceiveFilterLowHz is not int wantLow || lowHz == wantLow;
+                bool highAsAsked = options.ReceiveFilterHighHz is not int wantHigh || highHz == wantHigh;
+                if (lowAsAsked && highAsAsked)
+                {
+                    return;
+                }
+            }
+
+            if (Environment.TickCount64 > deadline)
+            {
+                break;
+            }
+
+            await Task.Delay(20, cancellation).ConfigureAwait(false);
+        }
+
+        if (parts.Count == 0)
+        {
+            return;
+        }
+
+        string asked = string.Join(
+            ", ",
+            new[]
+            {
+                options.ReceiveFilterLowHz is int lw ? $"low {lw} Hz" : null,
+                options.ReceiveFilterHighHz is int hw ? $"high {hw} Hz" : null,
+            }.Where(part => part is not null));
+        ReceiveFilterWarning = ReceiveFilter is (int gotLow, int gotHigh)
+            ? $"asked the slice for a receive filter of {asked} and it reports {gotLow}-{gotHigh} Hz — "
+              + "the radio would not go that wide, so anything outside what it reports is not being heard"
+            : $"asked the slice for a receive filter of {asked} but it never reported one back";
     }
 
     /// <summary>Creates the DAX-RX audio source.</summary>

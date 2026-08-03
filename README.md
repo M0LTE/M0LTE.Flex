@@ -199,6 +199,16 @@ landing above the dial in `DIGU`/`USB` and below it in `DIGL`/`LSB`.
 
 Both settings persist after teardown and affect what the radio transmits from thereafter.
 
+- **Receive has a filter of its own, on the slice.** The transmit filter governs what leaves the
+  radio; what reaches DAX-RX is capped separately by the slice's own passband, so widening only the
+  transmit side gives a wide signal out and an ordinary ~3 kHz window back in.
+  `ReceiveFilterLowHz`/`ReceiveFilterHighHz` set it (`slice set <n> filter_lo= filter_hi=`), headless
+  only — in attach mode the slice is SmartSDR's. Unlike the transmit filter this is slice state, so it
+  goes away with the slice rather than persisting on the radio. The radio's ceiling on receive width
+  is **not measured**, unlike the transmit filter's 10 kHz clamp, so nothing assumes one: the filter
+  is read back on `ReceiveFilter`, and `ReceiveFilterWarning` says so if the radio did not land where
+  it was asked. `MockFlexRadio.MaxSliceFilterHighHz` models a radio that will not go that wide.
+
 ## Testing without a radio
 
 ```csharp
