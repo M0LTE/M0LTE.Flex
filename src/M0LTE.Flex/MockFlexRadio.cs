@@ -148,6 +148,19 @@ public sealed class MockFlexRadio : IAsyncDisposable
     /// indistinguishable from success without reading the value back.</summary>
     public bool DiscardRfPowerWrites { get; set; }
 
+    /// <summary>Models a LOST keyup race: <c>xmit 1</c> is answered <c>err=0</c> but no
+    /// interlock transition follows - the radio granted somebody else the PA. Pair with
+    /// <see cref="InjectStatusAsync"/> to script what the phantom winner's status looks
+    /// like. For testing <see cref="FlexArbitratedPtt"/>'s confirm step.</summary>
+    public bool SuppressInterlockOnXmit { get; set; }
+
+    /// <summary>Writes one raw status line (e.g. <c>S1B2C3D4|interlock state=TRANSMITTING</c>)
+    /// to the connected client, verbatim - scripts a phantom second client's traffic, which
+    /// the single-session mock cannot otherwise produce. Deliberately NOT a model of
+    /// multi-client TX semantics: those are unverified on hardware, and a mock that encoded
+    /// guesses would pin them as truth.</summary>
+    public Task InjectStatusAsync(string statusLine) => WriteLineAsync(statusLine);
+
     /// <summary>The transmit RF power the modelled radio is holding.</summary>
     public int RfPower => _rfPower;
 
@@ -540,8 +553,11 @@ public sealed class MockFlexRadio : IAsyncDisposable
         else if (cmd == "xmit 1")
         {
             await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
-            await WriteLineAsync($"S{HandleHex}|interlock state=PTT_REQUESTED").ConfigureAwait(false);
-            await WriteLineAsync($"S{HandleHex}|interlock state=TRANSMITTING").ConfigureAwait(false);
+            if (!SuppressInterlockOnXmit)
+            {
+                await WriteLineAsync($"S{HandleHex}|interlock state=PTT_REQUESTED").ConfigureAwait(false);
+                await WriteLineAsync($"S{HandleHex}|interlock state=TRANSMITTING").ConfigureAwait(false);
+            }
         }
         else if (cmd == "xmit 0")
         {

@@ -35,6 +35,13 @@ public sealed record FlexStationOptions
     /// (nDAX default "Flex"). Ignored in headless mode.</summary>
     public string Station { get; init; } = "Flex";
 
+    /// <summary>Headless only: a station name to register with the radio (best-effort
+    /// <c>client station &lt;name&gt;</c> after <c>client gui</c>; a rejection never fails
+    /// bring-up). Per-station state - rfpower - and other operators' diagnostics then name
+    /// this client instead of a generic "Flex", which matters as soon as two transmitting
+    /// clients share a radio. Null (the default) sends nothing.</summary>
+    public string? HeadlessStationName { get; init; }
+
     /// <summary>The slice letter (headless: the letter to expect on the created slice;
     /// attach: the letter to find). Default "A".</summary>
     public string SliceLetter { get; init; } = "A";
@@ -257,6 +264,16 @@ public sealed class FlexStation : IAsyncDisposable
         FlexResult gui = await client.SendCommandExpectOkAsync("client gui", cancellation)
             .ConfigureAwait(false);
         string clientId = gui.Message.Trim();
+
+        // 1b. Name the station, best-effort: per-station state (rfpower) and another
+        //     operator's diagnostics then say who we are instead of a generic "Flex". The
+        //     command spelling is unverified against every firmware, so a rejection is
+        //     tolerated rather than failing bring-up over a label.
+        if (options.HeadlessStationName is { Length: > 0 } stationName)
+        {
+            await station.TryBestEffortAsync($"client station {stationName}", cancellation)
+                .ConfigureAwait(false);
+        }
 
         // 2. Create our own slice and find it by our client handle (we own it, so its
         //    client_handle == this session's handle — not a station name).
@@ -598,6 +615,12 @@ public sealed class FlexStation : IAsyncDisposable
     /// <summary>Creates the slice PTT.</summary>
     public FlexPtt CreatePtt(bool confirmInterlock = false) =>
         new(_client, SliceIndex, confirmInterlock);
+
+    /// <summary>Creates the arbitrated slice PTT, for a radio shared between transmitting
+    /// clients - it keys only into a quiet radio and only believes a keyup the radio
+    /// confirms. See <see cref="FlexArbitratedPtt"/>.</summary>
+    public FlexArbitratedPtt CreateArbitratedPtt(FlexPttArbitrationOptions? options = null) =>
+        new(_client, SliceIndex, options);
 
     private async Task FinishAsync(FlexStationOptions options, CancellationToken cancellation)
     {
