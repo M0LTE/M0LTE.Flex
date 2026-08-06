@@ -27,6 +27,14 @@ namespace M0LTE.Flex
         public void WriteSamples(System.ReadOnlySpan<float> samples, System.Span<byte> destination) { }
         public static M0LTE.Flex.DaxStreamFormat ForDspRate(int dspRate) { }
     }
+    public sealed class FlexArbitratedPtt : M0LTE.Radio.Audio.IPttControl, System.IDisposable
+    {
+        public FlexArbitratedPtt(M0LTE.Flex.FlexClient client, string sliceIndex, M0LTE.Flex.FlexPttArbitrationOptions? options = null) { }
+        public bool AnotherStationTransmitting { get; }
+        public void Dispose() { }
+        public void Key() { }
+        public void Unkey() { }
+    }
     public sealed class FlexAudioInput : M0LTE.Radio.Audio.IAudioInput, System.IDisposable
     {
         public FlexAudioInput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, int packetBuffer = 3) { }
@@ -160,6 +168,17 @@ namespace M0LTE.Flex
         public void Key() { }
         public void Unkey() { }
     }
+    public sealed class FlexPttArbitrationOptions : System.IEquatable<M0LTE.Flex.FlexPttArbitrationOptions>
+    {
+        public FlexPttArbitrationOptions() { }
+        public System.TimeSpan ConfirmTimeout { get; init; }
+        public int KeyAttempts { get; init; }
+        public System.TimeSpan QuietWaitTimeout { get; init; }
+        public System.TimeSpan RetryBackoff { get; init; }
+        public int? RfPower { get; init; }
+        public System.TimeSpan StaleUnkeyGrace { get; init; }
+        public int? TransmitFilterHighHz { get; init; }
+    }
     public sealed class FlexRadioInfo : System.IEquatable<M0LTE.Flex.FlexRadioInfo>
     {
         public FlexRadioInfo() { }
@@ -222,6 +241,7 @@ namespace M0LTE.Flex
         public string? TransmitSourceWarning { get; }
         public string? TuneWarning { get; }
         public uint TxStreamId { get; }
+        public M0LTE.Flex.FlexArbitratedPtt CreateArbitratedPtt(M0LTE.Flex.FlexPttArbitrationOptions? options = null) { }
         public M0LTE.Flex.FlexAudioInput CreateAudioInput(int packetBuffer = 3) { }
         public M0LTE.Flex.FlexAudioOutput CreateAudioOutput(bool paceRealTime = true) { }
         public M0LTE.Flex.FlexPtt CreatePtt(bool confirmInterlock = false) { }
@@ -236,6 +256,7 @@ namespace M0LTE.Flex
         public string DaxChannel { get; init; }
         public string Frequency { get; init; }
         public int Gain { get; init; }
+        public string? HeadlessStationName { get; init; }
         public bool Keepalive { get; init; }
         public int? ReceiveFilterHighHz { get; init; }
         public int? ReceiveFilterLowHz { get; init; }
@@ -254,6 +275,10 @@ namespace M0LTE.Flex
         public string Object { get; init; }
         public string SenderHandle { get; init; }
         public System.Collections.Generic.IReadOnlyDictionary<string, string> Updated { get; init; }
+    }
+    public sealed class FlexTxContendedException : System.Exception
+    {
+        public FlexTxContendedException(string message) { }
     }
     public sealed class FlexWaveform : System.IAsyncDisposable
     {
@@ -343,6 +368,7 @@ namespace M0LTE.Flex
                 "Low",
                 "High"})]
         public System.ValueTuple<int, int> SliceFilter { get; }
+        public bool SuppressInterlockOnXmit { get; set; }
         public int TcpPort { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "Low",
@@ -352,6 +378,7 @@ namespace M0LTE.Flex
         public int UdpPort { get; }
         public void DeliverTxPacket(byte[] packet) { }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public System.Threading.Tasks.Task InjectStatusAsync(string statusLine) { }
         public void PushMeters([System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "Id",
                 "Raw"})] params System.ValueTuple<int, short>[] meters) { }
