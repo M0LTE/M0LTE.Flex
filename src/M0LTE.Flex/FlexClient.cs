@@ -693,7 +693,7 @@ public sealed class FlexClient : IAsyncDisposable
 }
 
 /// <summary>Raised when the radio reports a command failure or the session breaks.</summary>
-public sealed class FlexProtocolException : Exception
+public class FlexProtocolException : Exception
 {
     /// <summary>Creates the exception with a message.</summary>
     public FlexProtocolException(string message)

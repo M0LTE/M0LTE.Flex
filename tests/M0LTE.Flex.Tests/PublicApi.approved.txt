@@ -29,14 +29,17 @@ namespace M0LTE.Flex
     }
     public sealed class FlexArbitratedPtt : M0LTE.Radio.Audio.IPttControl, System.IDisposable
     {
+        public FlexArbitratedPtt(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexSliceLease lease, M0LTE.Flex.FlexPttArbitrationOptions? options = null) { }
         public FlexArbitratedPtt(M0LTE.Flex.FlexClient client, string sliceIndex, M0LTE.Flex.FlexPttArbitrationOptions? options = null) { }
         public bool AnotherStationTransmitting { get; }
+        public string SliceIndex { get; }
         public void Dispose() { }
         public void Key() { }
         public void Unkey() { }
     }
     public sealed class FlexAudioInput : M0LTE.Radio.Audio.IAudioInput, System.IDisposable
     {
+        public FlexAudioInput(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexSliceLease lease, M0LTE.Flex.DaxStreamFormat format, int packetBuffer = 3) { }
         public FlexAudioInput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, int packetBuffer = 3) { }
         public long PacketsLost { get; }
         public long PacketsReceived { get; }
@@ -47,6 +50,7 @@ namespace M0LTE.Flex
     }
     public sealed class FlexAudioOutput : M0LTE.Radio.Audio.IAudioOutput
     {
+        public FlexAudioOutput(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexSliceLease lease, M0LTE.Flex.DaxStreamFormat format, bool paceRealTime = true) { }
         public FlexAudioOutput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, bool paceRealTime = true) { }
         public long PacketsSent { get; }
         public int SampleRate { get; }
@@ -79,6 +83,17 @@ namespace M0LTE.Flex
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexClient> ConnectAsync(string host, int port = 4992, int radioVitaPort = 4991, System.Threading.CancellationToken cancellation = default) { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexClient> DiscoverAndConnectAsync(string? spec, System.TimeSpan timeout, System.Threading.CancellationToken cancellation = default) { }
     }
+    public sealed class FlexContentionPolicy : System.IEquatable<M0LTE.Flex.FlexContentionPolicy>
+    {
+        public FlexContentionPolicy() { }
+        public System.TimeSpan InitialBackoff { get; init; }
+        public int LossThreshold { get; init; }
+        public System.TimeSpan LossWindow { get; init; }
+        public int MaxAttempts { get; init; }
+        public System.TimeSpan MaxBackoff { get; init; }
+        public static M0LTE.Flex.FlexContentionPolicy Default { get; }
+        public static M0LTE.Flex.FlexContentionPolicy Never { get; }
+    }
     public readonly struct FlexDaxIqOptions : System.IEquatable<M0LTE.Flex.FlexDaxIqOptions>
     {
         public FlexDaxIqOptions(string FrequencyMHz = "14.100000", string Antenna = "ANT1", int DaxChannel = 2, int RateKsps = 96, double RingSeconds = 0.5) { }
@@ -105,6 +120,13 @@ namespace M0LTE.Flex
         public static System.Collections.Generic.Dictionary<string, string> ParseFields(string payload) { }
         public static M0LTE.Flex.FlexRadioInfo ToRadioInfo(System.Collections.Generic.IReadOnlyDictionary<string, string> fields) { }
         public static M0LTE.Flex.FlexRadioInfo? TryParsePacket(System.ReadOnlySpan<byte> packet) { }
+    }
+    public static class FlexHandle
+    {
+        public const string Unset = "00000000";
+        public static bool IsUnset(string handle) { }
+        public static bool Matches(string a, string b) { }
+        public static string Normalize(string handle) { }
     }
     public sealed class FlexMeterDescriptor : System.IEquatable<M0LTE.Flex.FlexMeterDescriptor>
     {
@@ -157,14 +179,38 @@ namespace M0LTE.Flex
         External = 3,
         Gpsdo = 4,
     }
-    public sealed class FlexProtocolException : System.Exception
+    public readonly struct FlexOwnershipCheck : System.IEquatable<M0LTE.Flex.FlexOwnershipCheck>
+    {
+        public FlexOwnershipCheck(M0LTE.Flex.FlexOwnershipFault Fault, string Detail) { }
+        public string Detail { get; init; }
+        public M0LTE.Flex.FlexOwnershipFault Fault { get; init; }
+        public bool IsOwned { get; }
+        public static M0LTE.Flex.FlexOwnershipCheck Owned { get; }
+    }
+    public sealed class FlexOwnershipException : M0LTE.Flex.FlexProtocolException
+    {
+        public FlexOwnershipException(M0LTE.Flex.FlexOwnershipCheck check) { }
+        public M0LTE.Flex.FlexOwnershipCheck Check { get; }
+    }
+    public enum FlexOwnershipFault
+    {
+        None = 0,
+        Unbound = 1,
+        SliceGone = 2,
+        SliceNotInUse = 3,
+        ForeignOwner = 4,
+        AwaitingRebuild = 5,
+    }
+    public class FlexProtocolException : System.Exception
     {
         public FlexProtocolException(string message) { }
         public FlexProtocolException(string message, System.Exception inner) { }
     }
     public sealed class FlexPtt : M0LTE.Radio.Audio.IPttControl
     {
+        public FlexPtt(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexSliceLease lease, bool confirmInterlock = false, int confirmTimeoutMs = 500) { }
         public FlexPtt(M0LTE.Flex.FlexClient client, string sliceIndex, bool confirmInterlock = false, int confirmTimeoutMs = 500) { }
+        public string SliceIndex { get; }
         public void Key() { }
         public void Unkey() { }
     }
@@ -190,6 +236,14 @@ namespace M0LTE.Flex
         public int Port { get; init; }
         public string Serial { get; init; }
         public string Version { get; init; }
+    }
+    public readonly struct FlexRecoveryResult : System.IEquatable<M0LTE.Flex.FlexRecoveryResult>
+    {
+        public FlexRecoveryResult(bool Recovered, M0LTE.Flex.FlexStationHealth Health, int Attempts, string Detail) { }
+        public int Attempts { get; init; }
+        public string Detail { get; init; }
+        public M0LTE.Flex.FlexStationHealth Health { get; init; }
+        public bool Recovered { get; init; }
     }
     public sealed class FlexReferenceStatus : System.IEquatable<M0LTE.Flex.FlexReferenceStatus>
     {
@@ -219,11 +273,34 @@ namespace M0LTE.Flex
         Headless = 0,
         Attach = 1,
     }
+    public readonly struct FlexSliceBinding : System.IEquatable<M0LTE.Flex.FlexSliceBinding>
+    {
+        public FlexSliceBinding(string SliceIndex, string OwnerHandle, uint RxStreamId, uint TxStreamId, int Generation, bool IsValid) { }
+        public int Generation { get; init; }
+        public bool IsValid { get; init; }
+        public string OwnerHandle { get; init; }
+        public uint RxStreamId { get; init; }
+        public string SliceIndex { get; init; }
+        public uint TxStreamId { get; init; }
+        public static M0LTE.Flex.FlexSliceBinding None { get; }
+    }
+    public sealed class FlexSliceLease
+    {
+        public FlexSliceLease() { }
+        public FlexSliceLease(M0LTE.Flex.FlexSliceBinding binding) { }
+        public M0LTE.Flex.FlexSliceBinding Current { get; }
+        public M0LTE.Flex.FlexSliceBinding Bind(string sliceIndex, string ownerHandle, uint rxStreamId, uint txStreamId) { }
+        public M0LTE.Flex.FlexSliceBinding Invalidate() { }
+    }
     public sealed class FlexStation : System.IAsyncDisposable
     {
         public M0LTE.Flex.FlexClient Client { get; }
+        public M0LTE.Flex.FlexContentionPolicy ContentionPolicy { get; }
+        public string? DaxChannelWarning { get; }
         public M0LTE.Flex.DaxStreamFormat Format { get; }
         public M0LTE.Flex.FlexResult? HeadlessBindResult { get; }
+        public M0LTE.Flex.FlexStationHealth Health { get; }
+        public M0LTE.Flex.FlexSliceLease Lease { get; }
         public int? MaxPowerLevel { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "Low",
@@ -232,6 +309,7 @@ namespace M0LTE.Flex
         public string? ReceiveFilterWarning { get; }
         public int? RfPowerApplied { get; }
         public uint RxStreamId { get; }
+        public M0LTE.Flex.FlexSetupMode SetupMode { get; }
         public string SliceIndex { get; }
         [System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "Low",
@@ -241,18 +319,38 @@ namespace M0LTE.Flex
         public string? TransmitSourceWarning { get; }
         public string? TuneWarning { get; }
         public uint TxStreamId { get; }
+        public event System.Action<M0LTE.Flex.FlexStationHealthReport>? HealthChanged;
+        public event System.Action<M0LTE.Flex.FlexOwnershipCheck>? SliceLost;
         public M0LTE.Flex.FlexArbitratedPtt CreateArbitratedPtt(M0LTE.Flex.FlexPttArbitrationOptions? options = null) { }
         public M0LTE.Flex.FlexAudioInput CreateAudioInput(int packetBuffer = 3) { }
         public M0LTE.Flex.FlexAudioOutput CreateAudioOutput(bool paceRealTime = true) { }
         public M0LTE.Flex.FlexPtt CreatePtt(bool confirmInterlock = false) { }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
+        public System.Threading.Tasks.Task<M0LTE.Flex.FlexRecoveryResult> RecoverAsync(System.Threading.CancellationToken cancellation = default) { }
+        public M0LTE.Flex.FlexOwnershipCheck VerifyOwnership() { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexStation> SetUpAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.FlexStationOptions options, System.Threading.CancellationToken cancellation = default) { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexStation> SetUpHeadlessAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.DaxStreamFormat format, M0LTE.Flex.FlexStationOptions options, System.Threading.CancellationToken cancellation = default) { }
+    }
+    public enum FlexStationHealth
+    {
+        Unbound = 0,
+        Healthy = 1,
+        SliceLost = 2,
+        Recovering = 3,
+        Contended = 4,
+        Disposed = 5,
+    }
+    public readonly struct FlexStationHealthReport : System.IEquatable<M0LTE.Flex.FlexStationHealthReport>
+    {
+        public FlexStationHealthReport(M0LTE.Flex.FlexStationHealth Health, string Detail) { }
+        public string Detail { get; init; }
+        public M0LTE.Flex.FlexStationHealth Health { get; init; }
     }
     public sealed class FlexStationOptions : System.IEquatable<M0LTE.Flex.FlexStationOptions>
     {
         public FlexStationOptions() { }
         public string Antenna { get; init; }
+        public M0LTE.Flex.FlexContentionPolicy ContentionPolicy { get; init; }
         public string DaxChannel { get; init; }
         public string Frequency { get; init; }
         public int Gain { get; init; }
@@ -260,12 +358,14 @@ namespace M0LTE.Flex
         public bool Keepalive { get; init; }
         public int? ReceiveFilterHighHz { get; init; }
         public int? ReceiveFilterLowHz { get; init; }
+        public bool ReceiveOnly { get; init; }
         public int? RfPower { get; init; }
         public bool SelectDaxAsTransmitSource { get; init; }
         public System.TimeSpan SetupTimeout { get; init; }
         public string SliceLetter { get; init; }
         public string SliceMode { get; init; }
         public string Station { get; init; }
+        public System.TimeProvider TimeProvider { get; init; }
         public int? TransmitFilterHighHz { get; init; }
     }
     public readonly struct FlexStatusUpdate : System.IEquatable<M0LTE.Flex.FlexStatusUpdate>
@@ -382,8 +482,10 @@ namespace M0LTE.Flex
         public void PushMeters([System.Runtime.CompilerServices.TupleElementNames(new string[] {
                 "Id",
                 "Raw"})] params System.ValueTuple<int, short>[] meters) { }
+        public System.Threading.Tasks.Task RemoveSliceAsync() { }
         public System.Threading.Tasks.Task ReplayRxAsync(System.ReadOnlyMemory<float> samples, System.Threading.CancellationToken cancellation = default) { }
         public void Start() { }
+        public System.Threading.Tasks.Task StealSliceAsync(string foreignHandle = "DEADBEEF") { }
         public void WriteCapturedTxWav(string path) { }
     }
     public enum MockRxMode

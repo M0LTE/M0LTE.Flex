@@ -76,23 +76,39 @@ public sealed class FlexTxContendedException(string message) : Exception(message
 public sealed class FlexArbitratedPtt : IPttControl, IDisposable
 {
     private readonly FlexClient _client;
-    private readonly string _sliceIndex;
+    private readonly FlexSliceLease _lease;
     private readonly FlexPttArbitrationOptions _options;
     private readonly FlexInterlockView _view;
     private readonly Random _jitter = new();
     private bool _won;
 
-    /// <summary>Creates an arbitrated PTT bound to slice <paramref name="sliceIndex"/>.</summary>
+    /// <summary>Creates an arbitrated PTT bound to slice <paramref name="sliceIndex"/>, with no
+    /// ownership checking (there is no station behind it to record an owner).</summary>
     public FlexArbitratedPtt(
         FlexClient client, string sliceIndex, FlexPttArbitrationOptions? options = null)
+        : this(
+            client,
+            new FlexSliceLease(new FlexSliceBinding(sliceIndex, "", 0, 0, 1, IsValid: true)),
+            options)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(sliceIndex);
+    }
+
+    /// <summary>Creates an arbitrated PTT following <paramref name="lease"/>, so it verifies
+    /// ownership before keying and follows a station that rebuilds a lost slice.</summary>
+    public FlexArbitratedPtt(
+        FlexClient client, FlexSliceLease lease, FlexPttArbitrationOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(client);
-        ArgumentException.ThrowIfNullOrEmpty(sliceIndex);
+        ArgumentNullException.ThrowIfNull(lease);
         _client = client;
-        _sliceIndex = sliceIndex;
+        _lease = lease;
         _options = options ?? new FlexPttArbitrationOptions();
         _view = new FlexInterlockView(client);
     }
+
+    /// <summary>The slice index currently being keyed.</summary>
+    public string SliceIndex => _lease.Current.SliceIndex;
 
     /// <summary>True while the interlock says somebody is transmitting and it is not a keyup
     /// this instance won - the cheap predicate for a transmit-inhibit gate, so queued frames
@@ -102,6 +118,33 @@ public sealed class FlexArbitratedPtt : IPttControl, IDisposable
     /// <inheritdoc />
     public void Key()
     {
+        // Arbitration is about not stealing the PA from a peer; it says nothing about whether we
+        // still own the slice we are about to claim. Check that first, or a lost slice turns
+        // every keyup into a polite, correctly-arbitrated no-op.
+        FlexSliceBinding binding = _lease.Current;
+        if (binding.SliceIndex.Length == 0)
+        {
+            throw new FlexOwnershipException(
+                new FlexOwnershipCheck(FlexOwnershipFault.Unbound, "no slice is bound"));
+        }
+
+        // Real ownership before the cached flag, so the fault reported is the one that happened
+        // rather than whatever the status watcher got round to recording first.
+        if (SliceOwnedBySomeoneElse(binding, out string foreignOwner))
+        {
+            throw new FlexOwnershipException(new FlexOwnershipCheck(
+                FlexOwnershipFault.ForeignOwner,
+                $"slice {binding.SliceIndex} now belongs to client {foreignOwner}, "
+                + $"not {binding.OwnerHandle}"));
+        }
+
+        if (!binding.IsValid)
+        {
+            throw new FlexOwnershipException(new FlexOwnershipCheck(
+                FlexOwnershipFault.AwaitingRebuild,
+                $"slice {binding.SliceIndex} is marked lost and has not been rebuilt yet"));
+        }
+
         long deadline = Environment.TickCount64 + (long)_options.QuietWaitTimeout.TotalMilliseconds;
         for (int attempt = 1; ; attempt++)
         {
@@ -128,7 +171,7 @@ public sealed class FlexArbitratedPtt : IPttControl, IDisposable
                 Send($"transmit set rfpower={power}");
             }
 
-            Send($"slice set {_sliceIndex} tx=1");
+            Send($"slice set {binding.SliceIndex} tx=1");
             Send("xmit 1");
 
             if (ConfirmWon())
@@ -201,10 +244,55 @@ public sealed class FlexArbitratedPtt : IPttControl, IDisposable
         return false;
     }
 
-    private bool OurSliceHoldsTx() =>
-        _client.TryGetObject($"slice {_sliceIndex}", out IReadOnlyDictionary<string, string> slice)
-        && slice.TryGetValue("tx", out string? tx)
-        && tx == "1";
+    /// <summary>
+    /// Whether our slice is the transmit slice - and is still ours.
+    /// </summary>
+    /// <remarks>
+    /// The ownership half is not redundant. <c>tx=1</c> on a slice index proves only that
+    /// <i>somebody's</i> slice at that index is the transmit slice: when another client's
+    /// bring-up recycles the index, its slice carries <c>tx=1</c> quite happily and this read
+    /// passes while we are not transmitting at all. Measured on a FLEX-6500, fw 4.2.20.
+    /// </remarks>
+    private bool OurSliceHoldsTx()
+    {
+        FlexSliceBinding binding = _lease.Current;
+        if (!_client.TryGetObject(
+                $"slice {binding.SliceIndex}", out IReadOnlyDictionary<string, string> slice))
+        {
+            return false;
+        }
+
+        if (!slice.TryGetValue("tx", out string? tx) || tx != "1")
+        {
+            return false;
+        }
+
+        return !ForeignOwner(slice, binding, out _);
+    }
+
+    private bool SliceOwnedBySomeoneElse(FlexSliceBinding binding, out string owner)
+    {
+        owner = "";
+        return _client.TryGetObject(
+                $"slice {binding.SliceIndex}", out IReadOnlyDictionary<string, string> slice)
+            && ForeignOwner(slice, binding, out owner);
+    }
+
+    private static bool ForeignOwner(
+        IReadOnlyDictionary<string, string> slice, FlexSliceBinding binding, out string owner)
+    {
+        owner = "";
+        if (binding.OwnerHandle.Length == 0
+            || !slice.TryGetValue("client_handle", out string? handle)
+            || handle.Length == 0
+            || FlexHandle.Matches(handle, binding.OwnerHandle))
+        {
+            return false;
+        }
+
+        owner = handle;
+        return true;
+    }
 
     private void Send(string command) =>
         _client.SendCommandExpectOkAsync(command).GetAwaiter().GetResult();
