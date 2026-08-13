@@ -42,6 +42,32 @@ public sealed class FlexArbitratedPttTests
         throw new TimeoutException($"interlock never reached {state}");
     }
 
+    /// <summary>
+    /// Waits for the PTT's own interlock view to catch up, rather than the client's object cache.
+    /// </summary>
+    /// <remarks>
+    /// The two are not the same instant. <c>FlexClient</c> updates its object cache and then
+    /// raises <c>StatusUpdated</c>, so <see cref="WaitForInterlockAsync"/> can return while the
+    /// view's handler is still queued behind other subscribers - and every subscriber added
+    /// ahead of it widens that window. Waiting on the cache as a proxy for the view was always a
+    /// race; it only became a reliable failure once the station started watching status too.
+    /// </remarks>
+    private static async Task WaitForBusyAsync(FlexArbitratedPtt ptt, bool busy)
+    {
+        long deadline = Environment.TickCount64 + 2000;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (ptt.AnotherStationTransmitting == busy)
+            {
+                return;
+            }
+
+            await Task.Delay(5);
+        }
+
+        throw new TimeoutException($"AnotherStationTransmitting never became {busy}");
+    }
+
     [Fact]
     public async Task Key_Reasserts_The_Tx_Slice_On_Every_Keyup()
     {
@@ -189,6 +215,7 @@ public sealed class FlexArbitratedPttTests
         // the staleness bound one test burst would wedge the production daemon busy forever.
         await mock.InjectStatusAsync($"{Peer}|interlock state=UNKEY_REQUESTED");
         await WaitForInterlockAsync(client, "UNKEY_REQUESTED");
+        await WaitForBusyAsync(ptt, busy: true);
 
         ptt.AnotherStationTransmitting.Should().BeTrue("inside the grace it reads busy");
         Task key = Task.Run(ptt.Key);
@@ -208,11 +235,11 @@ public sealed class FlexArbitratedPttTests
         ptt.AnotherStationTransmitting.Should().BeFalse("a cold view reads quiet by design");
 
         await mock.InjectStatusAsync($"{Peer}|interlock state=TRANSMITTING");
-        await WaitForInterlockAsync(client, "TRANSMITTING");
+        await WaitForBusyAsync(ptt, busy: true);
         ptt.AnotherStationTransmitting.Should().BeTrue();
 
         await mock.InjectStatusAsync($"{Peer}|interlock state=RECEIVE");
-        await WaitForInterlockAsync(client, "RECEIVE");
+        await WaitForBusyAsync(ptt, busy: false);
         ptt.AnotherStationTransmitting.Should().BeFalse();
 
         ptt.Key();

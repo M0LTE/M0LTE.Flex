@@ -19,7 +19,11 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
     private const int SlotCount = 16;
 
     private readonly FlexClient _client;
-    private readonly uint _streamId;
+    /// <summary>The stream id is read from the lease per packet rather than captured, so a
+    /// station that rebuilds a lost slice re-points this input without it being recreated. The
+    /// read is a volatile reference load and a struct copy: lock-free and allocation-free, which
+    /// the DAX receive path requires.</summary>
+    private readonly FlexSliceLease _lease;
     private readonly DaxStreamFormat _format;
     private readonly int _packetBuffer;
     private readonly Action<VitaPacket> _handler;
@@ -48,13 +52,31 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
     /// <param name="packetBuffer">Reorder depth in packets (nDAX default 3; deeper on a
     /// loaded box, e.g. for ARDOP).</param>
     public FlexAudioInput(FlexClient client, uint streamId, DaxStreamFormat format, int packetBuffer = 3)
+        : this(
+            client,
+            new FlexSliceLease(new FlexSliceBinding("", "", streamId, 0, 1, IsValid: true)),
+            format,
+            packetBuffer)
+    {
+    }
+
+    /// <summary>Subscribes to the DAX-RX stream named by <paramref name="lease"/>, following it
+    /// across a rebuild so a station that recreates a lost slice keeps feeding this input.</summary>
+    /// <param name="client">The shared session.</param>
+    /// <param name="lease">The station's slice lease.</param>
+    /// <param name="format">The DAX transport format.</param>
+    /// <param name="packetBuffer">Reorder depth in packets (nDAX default 3; deeper on a
+    /// loaded box, e.g. for ARDOP).</param>
+    public FlexAudioInput(
+        FlexClient client, FlexSliceLease lease, DaxStreamFormat format, int packetBuffer = 3)
     {
         ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(format);
         ArgumentOutOfRangeException.ThrowIfNegative(packetBuffer);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(packetBuffer, SlotCount - 2);
         _client = client;
-        _streamId = streamId;
+        _lease = lease;
         _format = format;
         _packetBuffer = packetBuffer;
         _lastPayload = new float[format.SamplesPerPacket];
@@ -114,7 +136,7 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
 
     private void OnVitaPacket(VitaPacket packet)
     {
-        if (packet.StreamId != _streamId
+        if (packet.StreamId != _lease.Current.RxStreamId
             || packet.PacketClassCode != _format.PacketClassCode)
         {
             return;

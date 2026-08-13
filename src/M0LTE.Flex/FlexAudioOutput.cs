@@ -21,7 +21,9 @@ namespace M0LTE.Flex;
 public sealed class FlexAudioOutput : IAudioOutput
 {
     private readonly FlexClient _client;
-    private readonly uint _streamId;
+    /// <summary>Read from the lease per packet, so a rebuilt slice's new DAX-TX stream is used
+    /// without this sink being recreated.</summary>
+    private readonly FlexSliceLease _lease;
     private readonly DaxStreamFormat _format;
     private readonly bool _paceRealTime;
     private readonly float[] _accumulator;
@@ -38,11 +40,29 @@ public sealed class FlexAudioOutput : IAudioOutput
     /// <param name="paceRealTime">Meter packets out at the DAX rate (true for hardware;
     /// tests that loop through the mock can disable it for speed).</param>
     public FlexAudioOutput(FlexClient client, uint streamId, DaxStreamFormat format, bool paceRealTime = true)
+        : this(
+            client,
+            new FlexSliceLease(new FlexSliceBinding("", "", 0, streamId, 1, IsValid: true)),
+            format,
+            paceRealTime)
+    {
+    }
+
+    /// <summary>Creates a DAX-TX sink for the stream named by <paramref name="lease"/>, following
+    /// it across a rebuild.</summary>
+    /// <param name="client">The shared session (UDP already initialised).</param>
+    /// <param name="lease">The station's slice lease.</param>
+    /// <param name="format">The DAX transport format.</param>
+    /// <param name="paceRealTime">Meter packets out at the DAX rate (true for hardware;
+    /// tests that loop through the mock can disable it for speed).</param>
+    public FlexAudioOutput(
+        FlexClient client, FlexSliceLease lease, DaxStreamFormat format, bool paceRealTime = true)
     {
         ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(format);
         _client = client;
-        _streamId = streamId;
+        _lease = lease;
         _format = format;
         _paceRealTime = paceRealTime;
         _accumulator = new float[format.SamplesPerPacket];
@@ -102,7 +122,7 @@ public sealed class FlexAudioOutput : IAudioOutput
 
     private void SendPacket(ReadOnlySpan<float> packetSamples)
     {
-        byte[] packet = _format.BuildPacket(_streamId, _packetCount, packetSamples);
+        byte[] packet = _format.BuildPacket(_lease.Current.TxStreamId, _packetCount, packetSamples);
         _packetCount = (_packetCount + 1) & 0x0F;
         _client.SendVita(packet);
         _samplesSent += _format.SamplesPerPacket;

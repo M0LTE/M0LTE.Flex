@@ -161,6 +161,24 @@ public sealed class MockFlexRadio : IAsyncDisposable
     /// guesses would pin them as truth.</summary>
     public Task InjectStatusAsync(string statusLine) => WriteLineAsync(statusLine);
 
+    /// <summary>
+    /// Models another client taking over slice 0, as a second station's bring-up does when it
+    /// displaces ours: the slice object stays, at the same index, but its <c>client_handle</c>
+    /// becomes somebody else's.
+    /// </summary>
+    /// <remarks>
+    /// This is the shape of the failure that took GB7RDG's 40 m port off air for six days, and
+    /// it is nastier than an outright removal: the index still resolves, so <c>slice set 0
+    /// tx=1</c> keeps returning <c>err=0</c> while doing nothing, and only <c>xmit</c> fails.
+    /// </remarks>
+    /// <param name="foreignHandle">The handle to hand the slice to.</param>
+    public Task StealSliceAsync(string foreignHandle = "DEADBEEF") =>
+        WriteLineAsync($"S{HandleHex}|slice 0 client_handle=0x{foreignHandle}");
+
+    /// <summary>Models slice 0 being taken out of use, as an operator removing it in SmartSDR
+    /// does.</summary>
+    public Task RemoveSliceAsync() => WriteLineAsync($"S{HandleHex}|slice 0 in_use=0");
+
     /// <summary>The transmit RF power the modelled radio is holding.</summary>
     public int RfPower => _rfPower;
 

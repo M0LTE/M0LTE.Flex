@@ -150,6 +150,30 @@ public sealed record FlexStationOptions
     /// a data mode; the radio may report it back as "USB", which is equivalent for the DAX
     /// data path). Ignored in attach mode.</summary>
     public string SliceMode { get; init; } = "DIGU";
+
+    /// <summary>How hard the station tries to rebuild a lost slice, and when it stops. Default
+    /// <see cref="FlexContentionPolicy.Default"/>.</summary>
+    public FlexContentionPolicy ContentionPolicy { get; init; } = FlexContentionPolicy.Default;
+
+    /// <summary>Clock for recovery backoff and the contention window. Default
+    /// <see cref="TimeProvider.System"/>; inject a fake to test the policy without waiting.</summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>
+    /// Set up for receive only: never touch the radio's global transmit state.
+    /// </summary>
+    /// <remarks>
+    /// <para>The transmit audio source, the transmit filter and RF power are <b>global, persistent</b>
+    /// radio settings rather than per-slice ones, so a receive-only client that runs the normal
+    /// bring-up silently rewrites what every other client on that radio transmits with. A capture
+    /// or monitoring tool has no business doing that, and the damage outlives its process.</para>
+    /// <para>This suppresses all three, overriding
+    /// <see cref="SelectDaxAsTransmitSource"/>, <see cref="TransmitFilterHighHz"/> and
+    /// <see cref="RfPower"/>. The slice and its DAX-RX stream are created as usual; the DAX-TX
+    /// stream still is too, so the shape of the session is unchanged, but nothing is ever pointed
+    /// at the transmitter.</para>
+    /// </remarks>
+    public bool ReceiveOnly { get; init; }
 }
 
 /// <summary>
@@ -181,11 +205,66 @@ public sealed class FlexStation : IAsyncDisposable
     /// remove it.</summary>
     private bool _createdSlice;
 
+    /// <summary>The handle the slice is expected to belong to: ours on the headless path (we
+    /// created it), the bound SmartSDR client's on the attach path.</summary>
+    private string _ownerHandle = "";
+
+    /// <summary>The options bring-up ran with, kept so a rebuild reproduces the same station
+    /// rather than a default one.</summary>
+    private FlexStationOptions? _setupOptions;
+
+    private FlexSetupMode _setupMode;
+
+    /// <summary>Serialises recovery: a status-stream loss and a failed keyup can both notice the
+    /// same loss, and two concurrent rebuilds would create two slices and leak one.</summary>
+    private readonly SemaphoreSlim _recoveryGate = new(1, 1);
+
+    /// <summary>Timestamps of recent losses, for the contention window. Guarded by itself.</summary>
+    private readonly List<DateTimeOffset> _losses = [];
+
+    private FlexStationHealth _health = FlexStationHealth.Unbound;
+    private bool _watching;
+    private bool _disposed;
+
     private FlexStation(FlexClient client, DaxStreamFormat format)
     {
         _client = client;
         _format = format;
     }
+
+    /// <summary>The identifiers this station currently holds, shared by reference with the PTT
+    /// and the audio streams it creates so that a rebuild is transparent to them.</summary>
+    public FlexSliceLease Lease { get; } = new();
+
+    /// <summary>How the station was brought up. A rebuild follows the same path.</summary>
+    public FlexSetupMode SetupMode => _setupMode;
+
+    /// <summary>The contention policy governing rebuilds. Defaults to
+    /// <see cref="FlexContentionPolicy.Default"/>; set via
+    /// <see cref="FlexStationOptions.ContentionPolicy"/>.</summary>
+    public FlexContentionPolicy ContentionPolicy { get; private set; } = FlexContentionPolicy.Default;
+
+    /// <summary>The clock used for contention windows and backoff.</summary>
+    private TimeProvider _time = TimeProvider.System;
+
+    /// <summary>Whether the station still owns what it set up.</summary>
+    public FlexStationHealth Health
+    {
+        get
+        {
+            lock (_losses)
+            {
+                return _health;
+            }
+        }
+    }
+
+    /// <summary>Raised on every health transition, including the move into
+    /// <see cref="FlexStationHealth.Contended"/> when the station stands down.</summary>
+    public event Action<FlexStationHealthReport>? HealthChanged;
+
+    /// <summary>Raised when the station notices it no longer owns its slice, before any rebuild.</summary>
+    public event Action<FlexOwnershipCheck>? SliceLost;
 
     /// <summary>The shared session.</summary>
     public FlexClient Client => _client;
@@ -230,10 +309,11 @@ public sealed class FlexStation : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(format);
         ArgumentNullException.ThrowIfNull(options);
 
-        var station = new FlexStation(client, format);
+        var station = new FlexStation(client, format) { _setupMode = FlexSetupMode.Attach };
         await client.InitUdpAsync(cancellation).ConfigureAwait(false);
 
         string clientHandle = await station.BindClientAsync(options, cancellation).ConfigureAwait(false);
+        station._ownerHandle = clientHandle;
         await station.FindSliceAsync(options, clientHandle, cancellation).ConfigureAwait(false);
         await station.EnableDaxAsync(options, cancellation).ConfigureAwait(false);
         await station.ApplyRfPowerAsync(options, cancellation).ConfigureAwait(false);
@@ -256,7 +336,7 @@ public sealed class FlexStation : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(format);
         ArgumentNullException.ThrowIfNull(options);
 
-        var station = new FlexStation(client, format);
+        var station = new FlexStation(client, format) { _setupMode = FlexSetupMode.Headless };
         await client.InitUdpAsync(cancellation).ConfigureAwait(false);
 
         // 1. Register as a GUI client — this makes us able to own a slice and returns our
@@ -332,7 +412,9 @@ public sealed class FlexStation : IAsyncDisposable
     /// </remarks>
     private async Task SelectDaxTransmitSourceAsync(FlexStationOptions options, CancellationToken cancellation)
     {
-        if (!options.SelectDaxAsTransmitSource)
+        // ReceiveOnly wins: pointing the transmitter at DAX is global and persistent, so a
+        // capture client doing it changes what the operator's other clients put on air.
+        if (options.ReceiveOnly || !options.SelectDaxAsTransmitSource)
         {
             return;
         }
@@ -420,7 +502,7 @@ public sealed class FlexStation : IAsyncDisposable
         await TryBestEffortAsync("sub tx all", cancellation).ConfigureAwait(false);
         ReadPowerStatus();
 
-        if (options.RfPower is not int want)
+        if (options.ReceiveOnly || options.RfPower is not int want)
         {
             return;
         }
@@ -490,7 +572,9 @@ public sealed class FlexStation : IAsyncDisposable
     {
         await TryBestEffortAsync("sub tx all", cancellation).ConfigureAwait(false);
 
-        if (options.TransmitFilterHighHz is int high)
+        // Read back either way (it is the only way to know what is shaping the signal), but a
+        // receive-only station never writes this global filter.
+        if (!options.ReceiveOnly && options.TransmitFilterHighHz is int high)
         {
             await TryBestEffortAsync($"transmit set filter_high={high}", cancellation).ConfigureAwait(false);
         }
@@ -604,23 +688,25 @@ public sealed class FlexStation : IAsyncDisposable
             : $"asked the slice for a receive filter of {asked} but it never reported one back";
     }
 
-    /// <summary>Creates the DAX-RX audio source.</summary>
+    /// <summary>Creates the DAX-RX audio source. It follows <see cref="Lease"/>, so a rebuilt
+    /// slice keeps feeding the same object.</summary>
     public FlexAudioInput CreateAudioInput(int packetBuffer = 3) =>
-        new(_client, RxStreamId, _format, packetBuffer);
+        new(_client, Lease, _format, packetBuffer);
 
-    /// <summary>Creates the DAX-TX audio sink.</summary>
+    /// <summary>Creates the DAX-TX audio sink. It follows <see cref="Lease"/>.</summary>
     public FlexAudioOutput CreateAudioOutput(bool paceRealTime = true) =>
-        new(_client, TxStreamId, _format, paceRealTime);
+        new(_client, Lease, _format, paceRealTime);
 
-    /// <summary>Creates the slice PTT.</summary>
+    /// <summary>Creates the slice PTT. It follows <see cref="Lease"/>, and refuses to key while
+    /// the binding is invalid.</summary>
     public FlexPtt CreatePtt(bool confirmInterlock = false) =>
-        new(_client, SliceIndex, confirmInterlock);
+        new(_client, Lease, confirmInterlock);
 
     /// <summary>Creates the arbitrated slice PTT, for a radio shared between transmitting
     /// clients - it keys only into a quiet radio and only believes a keyup the radio
     /// confirms. See <see cref="FlexArbitratedPtt"/>.</summary>
     public FlexArbitratedPtt CreateArbitratedPtt(FlexPttArbitrationOptions? options = null) =>
-        new(_client, SliceIndex, options);
+        new(_client, Lease, options);
 
     private async Task FinishAsync(FlexStationOptions options, CancellationToken cancellation)
     {
@@ -628,6 +714,290 @@ public sealed class FlexStation : IAsyncDisposable
         {
             await _client.EnableKeepaliveAsync(TimeSpan.FromSeconds(1), cancellation).ConfigureAwait(false);
         }
+
+        _setupOptions = options;
+        ContentionPolicy = options.ContentionPolicy;
+        _time = options.TimeProvider;
+        PublishBinding();
+        SetHealth(FlexStationHealth.Healthy, $"slice {SliceIndex} owned by {_ownerHandle}");
+        StartWatching();
+    }
+
+    /// <summary>Publishes the current bring-up state to the shared lease.</summary>
+    private void PublishBinding() => Lease.Bind(SliceIndex, _ownerHandle, RxStreamId, TxStreamId);
+
+    /// <summary>
+    /// Checks, from the client's already-maintained status cache, whether this station still owns
+    /// its slice. In-memory and allocation-light: no round trip to the radio.
+    /// </summary>
+    /// <remarks>
+    /// This is the check whose absence let a station transmit into nothing for six days. The
+    /// radio answers <c>slice set &lt;n&gt; tx=1</c> with <c>err=0</c> for a slice index that
+    /// exists but belongs to a different client, so a command's success proves only that the
+    /// command was understood - never that it did anything. Ownership has to be read back, the
+    /// same discipline the DAX transmit-source step already applies at bring-up.
+    /// </remarks>
+    public FlexOwnershipCheck VerifyOwnership()
+    {
+        FlexSliceBinding binding = Lease.Current;
+        if (binding.SliceIndex.Length == 0)
+        {
+            return new FlexOwnershipCheck(FlexOwnershipFault.Unbound, "no slice is bound");
+        }
+
+        string objectName = "slice " + binding.SliceIndex;
+        if (!_client.TryGetObject(objectName, out IReadOnlyDictionary<string, string> slice)
+            || slice.Count == 0)
+        {
+            return new FlexOwnershipCheck(
+                FlexOwnershipFault.SliceGone, $"slice {binding.SliceIndex} is no longer on the radio");
+        }
+
+        if (slice.TryGetValue("in_use", out string? inUse) && inUse is "0" or "false" or "False")
+        {
+            return new FlexOwnershipCheck(
+                FlexOwnershipFault.SliceNotInUse, $"slice {binding.SliceIndex} reports in_use=0");
+        }
+
+        // A slice that never reported a client_handle is not evidence of theft: the attach path
+        // can bind a slice whose status predates our subscription. Only a handle that is present
+        // AND different is a foreign owner.
+        if (slice.TryGetValue("client_handle", out string? owner)
+            && owner.Length > 0
+            && !HandleMatches(owner, binding.OwnerHandle))
+        {
+            return new FlexOwnershipCheck(
+                FlexOwnershipFault.ForeignOwner,
+                $"slice {binding.SliceIndex} now belongs to client {owner}, not {binding.OwnerHandle}");
+        }
+
+        return FlexOwnershipCheck.Owned;
+    }
+
+    /// <summary>Subscribes to the status stream so a loss is noticed when it happens rather than
+    /// at the next keyup. The stream is already flowing and already parsed, so this costs
+    /// nothing beyond the handler.</summary>
+    private void StartWatching()
+    {
+        if (_watching)
+        {
+            return;
+        }
+
+        _watching = true;
+        _client.StatusUpdated += OnStatusUpdated;
+    }
+
+    private void OnStatusUpdated(FlexStatusUpdate update)
+    {
+        // Only slice objects can carry our loss, and only the one we hold.
+        FlexSliceBinding binding = Lease.Current;
+        if (!binding.IsValid
+            || binding.SliceIndex.Length == 0
+            || !update.Object.Equals("slice " + binding.SliceIndex, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        FlexOwnershipCheck check = VerifyOwnership();
+        if (!check.IsOwned)
+        {
+            NoteLoss(check);
+        }
+    }
+
+    /// <summary>
+    /// Records a loss, invalidates the binding and decides whether this is a one-off worth
+    /// recovering from or active contention worth standing down over.
+    /// </summary>
+    private void NoteLoss(FlexOwnershipCheck check)
+    {
+        bool contended;
+        lock (_losses)
+        {
+            if (_health is FlexStationHealth.Contended or FlexStationHealth.Disposed)
+            {
+                return;
+            }
+
+            // Already known lost; do not double-count one loss reported by both the status
+            // stream and a failed keyup.
+            if (!Lease.Current.IsValid)
+            {
+                return;
+            }
+
+            DateTimeOffset now = _time.GetUtcNow();
+            _losses.Add(now);
+            _losses.RemoveAll(at => now - at > ContentionPolicy.LossWindow);
+            contended = ContentionPolicy.LossThreshold > 0
+                && _losses.Count >= ContentionPolicy.LossThreshold;
+        }
+
+        Lease.Invalidate();
+        SliceLost?.Invoke(check);
+
+        if (contended)
+        {
+            SetHealth(
+                FlexStationHealth.Contended,
+                $"{check.Detail}; lost the slice {ContentionPolicy.LossThreshold} times within "
+                + $"{ContentionPolicy.LossWindow.TotalMinutes:0.#} minutes, so something else is "
+                + "actively claiming it. Standing down rather than rebuilding into a fight - "
+                + "decide which client should own this radio.");
+        }
+        else
+        {
+            SetHealth(FlexStationHealth.SliceLost, check.Detail);
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds a lost slice, following the same bring-up path the station was created with.
+    /// </summary>
+    /// <remarks>
+    /// <para>Safe to call at any time and from anywhere: it is serialised, it returns immediately
+    /// if the station is healthy, and it refuses once the station has stood down as
+    /// <see cref="FlexStationHealth.Contended"/>.</para>
+    /// <para><b>It never takes a slice from another client.</b> The rebuild creates a new slice of
+    /// its own; the stale index is dropped first, so no command is ever addressed to a slice
+    /// somebody else now owns. That matters because the recovery path would otherwise be a
+    /// perfectly good theft primitive - <c>slice set &lt;theirs&gt; dax=…</c> would happily
+    /// reconfigure a stranger's slice.</para>
+    /// </remarks>
+    /// <param name="cancellation">Cancels the rebuild.</param>
+    public async Task<FlexRecoveryResult> RecoverAsync(CancellationToken cancellation = default)
+    {
+        if (_setupOptions is not FlexStationOptions options)
+        {
+            return new FlexRecoveryResult(
+                false, Health, 0, "the station has not finished bring-up, so there is nothing to rebuild");
+        }
+
+        await _recoveryGate.WaitAsync(cancellation).ConfigureAwait(false);
+        try
+        {
+            if (_disposed)
+            {
+                return new FlexRecoveryResult(false, FlexStationHealth.Disposed, 0, "the station is disposed");
+            }
+
+            if (Health == FlexStationHealth.Contended)
+            {
+                return new FlexRecoveryResult(
+                    false, FlexStationHealth.Contended, 0,
+                    "the station has stood down after repeated losses; rebuilding would resume the fight");
+            }
+
+            if (VerifyOwnership().IsOwned && Lease.Current.IsValid)
+            {
+                return new FlexRecoveryResult(true, Health, 0, "the slice was already owned");
+            }
+
+            SetHealth(FlexStationHealth.Recovering, "rebuilding the slice");
+
+            TimeSpan backoff = ContentionPolicy.InitialBackoff;
+            string detail = "no rebuild was attempted";
+            for (int attempt = 1; attempt <= ContentionPolicy.MaxAttempts; attempt++)
+            {
+                await Task.Delay(backoff, _time, cancellation).ConfigureAwait(false);
+                backoff = backoff * 2 > ContentionPolicy.MaxBackoff ? ContentionPolicy.MaxBackoff : backoff * 2;
+
+                try
+                {
+                    await RebuildAsync(options, cancellation).ConfigureAwait(false);
+                    FlexOwnershipCheck check = VerifyOwnership();
+                    if (check.IsOwned)
+                    {
+                        SetHealth(
+                            FlexStationHealth.Healthy,
+                            $"rebuilt on slice {SliceIndex} after {attempt} attempt(s)");
+                        return new FlexRecoveryResult(
+                            true, FlexStationHealth.Healthy, attempt, $"rebuilt on slice {SliceIndex}");
+                    }
+
+                    detail = check.Detail;
+                }
+                catch (FlexProtocolException ex)
+                {
+                    detail = ex.Message;
+                }
+                catch (Exception ex) when (ex is IOException or SocketException)
+                {
+                    detail = ex.Message;
+                }
+
+                Debug.WriteLine($"flex: rebuild attempt {attempt} failed ({detail})");
+            }
+
+            SetHealth(FlexStationHealth.SliceLost, $"rebuild failed: {detail}");
+            return new FlexRecoveryResult(
+                false, FlexStationHealth.SliceLost, ContentionPolicy.MaxAttempts, detail);
+        }
+        finally
+        {
+            _recoveryGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// One rebuild attempt: drop the stale identifiers, then re-run the path this station was
+    /// brought up on.
+    /// </summary>
+    private async Task RebuildAsync(FlexStationOptions options, CancellationToken cancellation)
+    {
+        // Drop the stale slice index BEFORE anything is sent. Every step below addresses
+        // SliceIndex, and if that still held a index another client now owns, the rebuild would
+        // reconfigure their slice instead of building ours.
+        SliceIndex = "";
+        _createdSlice = false;
+
+        if (_setupMode == FlexSetupMode.Headless)
+        {
+            await CreateSliceAsync(options, cancellation).ConfigureAwait(false);
+            await EnsureTunedAsync(options, cancellation).ConfigureAwait(false);
+            await EnableDaxAsync(options, cancellation).ConfigureAwait(false);
+            await SelectDaxTransmitSourceAsync(options, cancellation).ConfigureAwait(false);
+            await ApplyTransmitFilterAsync(options, cancellation).ConfigureAwait(false);
+            await ApplyReceiveFilterAsync(options, cancellation).ConfigureAwait(false);
+            await ApplyRfPowerAsync(options, cancellation).ConfigureAwait(false);
+        }
+        else
+        {
+            string clientHandle = await BindClientAsync(options, cancellation).ConfigureAwait(false);
+            _ownerHandle = clientHandle;
+            await FindSliceAsync(options, clientHandle, cancellation).ConfigureAwait(false);
+            await EnableDaxAsync(options, cancellation).ConfigureAwait(false);
+            await ApplyRfPowerAsync(options, cancellation).ConfigureAwait(false);
+        }
+
+        PublishBinding();
+    }
+
+    /// <summary>
+    /// Whether teardown may remove the slice. Only a positively identified foreign owner blocks
+    /// removal: a slice whose status object has gone entirely is not somebody else's, and
+    /// refusing to remove it there would reintroduce the slice leak that fills the radio's four
+    /// slots. So this fails safe in the direction of tidying up after ourselves, and stops only
+    /// at the one case that would damage another client.
+    /// </summary>
+    private bool OwnsSliceForTeardown() =>
+        VerifyOwnership().Fault != FlexOwnershipFault.ForeignOwner;
+
+    private void SetHealth(FlexStationHealth health, string detail)
+    {
+        lock (_losses)
+        {
+            if (_health == health)
+            {
+                return;
+            }
+
+            _health = health;
+        }
+
+        Debug.WriteLine($"flex: station {health} - {detail}");
+        HealthChanged?.Invoke(new FlexStationHealthReport(health, detail));
     }
 
     private async Task<string> BindClientAsync(FlexStationOptions options, CancellationToken cancellation)
@@ -693,6 +1063,7 @@ public sealed class FlexStation : IAsyncDisposable
             options.SetupTimeout,
             cancellation).ConfigureAwait(false);
         SliceIndex = sliceObject["slice ".Length..];
+        _ownerHandle = _client.Handle;
         _createdSlice = true;
     }
 
@@ -822,8 +1193,46 @@ public sealed class FlexStation : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// A warning when another client's slice already claims the DAX channel we are about to
+    /// take, else null.
+    /// </summary>
+    /// <remarks>
+    /// Claiming an occupied DAX channel is how one headless station displaces another: the
+    /// claim succeeds, and the loser keeps running with a slice that is no longer wired to
+    /// anything. It is not made fatal, because a caller may genuinely intend to take the
+    /// channel over, and because guessing wrong and refusing to start would be worse than
+    /// saying so. But it is said, at the moment it can still be acted on.
+    /// </remarks>
+    public string? DaxChannelWarning { get; private set; }
+
+    /// <summary>Looks for a foreign slice already on our DAX channel, before we claim it.</summary>
+    private void CheckDaxChannelCollision(FlexStationOptions options)
+    {
+        if (!_client.TryFindObject(
+                "slice ",
+                state => state.GetValueOrDefault("dax") == options.DaxChannel
+                    && state.TryGetValue("client_handle", out string? handle)
+                    && handle.Length > 0
+                    && !FlexHandle.Matches(handle, _ownerHandle),
+                out string other))
+        {
+            return;
+        }
+
+        _client.TryGetObject(other, out IReadOnlyDictionary<string, string> slice);
+        DaxChannelWarning =
+            $"DAX channel {options.DaxChannel} is already claimed by {other} "
+            + $"(client {slice.GetValueOrDefault("client_handle", "unknown")}). Taking it is "
+            + "likely to leave that client's station running with a slice wired to nothing; "
+            + "give one of the two its own dax channel.";
+        Debug.WriteLine($"flex: {DaxChannelWarning}");
+    }
+
     private async Task EnableDaxAsync(FlexStationOptions options, CancellationToken cancellation)
     {
+        CheckDaxChannelCollision(options);
+
         if (_format.IsReducedBandwidth)
         {
             await _client.SendCommandExpectOkAsync("client set send_reduced_bw_dax=true", cancellation)
@@ -871,18 +1280,7 @@ public sealed class FlexStation : IAsyncDisposable
 
     /// <summary>Compares two Flex handles, normalising away any "0x" prefix (the prologue H
     /// line carries none; status objects reference handles in the "0x…" form).</summary>
-    private static bool HandleMatches(string a, string b)
-    {
-        if (a.Length == 0 || b.Length == 0)
-        {
-            return false;
-        }
-
-        return NormalizeHandle(a).Equals(NormalizeHandle(b), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string NormalizeHandle(string handle) =>
-        handle.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? handle[2..] : handle;
+    private static bool HandleMatches(string a, string b) => FlexHandle.Matches(a, b);
 
     private static uint ParseStreamId(string message)
     {
@@ -903,6 +1301,28 @@ public sealed class FlexStation : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
+        if (_watching)
+        {
+            _client.StatusUpdated -= OnStatusUpdated;
+            _watching = false;
+        }
+
+        SetHealth(FlexStationHealth.Disposed, "disposed");
+        _recoveryGate.Dispose();
+
+        // Only remove a slice we still own. If another client has taken this index since we
+        // created it, `slice remove` would delete THEIR slice: the teardown of a station that
+        // has already lost a fight is not the place to take a parting shot at the winner. The
+        // ownership read is the same one the keying path uses.
+        if (_createdSlice && SliceIndex.Length > 0 && !OwnsSliceForTeardown())
+        {
+            Debug.WriteLine(
+                $"flex: not removing slice {SliceIndex} on dispose - it is no longer ours");
+            await _client.DisposeAsync().ConfigureAwait(false);
+            return;
+        }
+
         // Remove the slice WE created before dropping the client. A real FLEX-6500 does NOT
         // auto-remove a headless client's slice when that client disconnects (measured downstream,
         // 2026-07): the slice persists — tuned to our TX frequency, with a now-dead client handle —
