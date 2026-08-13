@@ -835,8 +835,18 @@ public sealed class FlexStation : IAsyncDisposable
         }
 
         Lease.Invalidate();
-        SliceLost?.Invoke(check);
 
+        // Health BEFORE the event, and this ordering is load-bearing. A host's SliceLost handler
+        // is expected to start RecoverAsync - that is what the event is for - so raising it first
+        // hands recovery a station that has not yet been told it is standing down. RecoverAsync
+        // then takes the gate, reads a health that is still Healthy, and rebuilds; the decision to
+        // stand down is announced and immediately overruled by a task the announcement started.
+        //
+        // Measured on the live 40 m station, 2026-08-13: the journal recorded "Recovering",
+        // then "STANDING DOWN", then "rebuilt on slice 0" seven seconds later. Every part in
+        // isolation behaved, which is why the offline tests were happy: they called RecoverAsync
+        // directly on a station whose health was already set, and never reproduced the order a
+        // real host produces.
         if (contended)
         {
             SetHealth(
@@ -850,6 +860,8 @@ public sealed class FlexStation : IAsyncDisposable
         {
             SetHealth(FlexStationHealth.SliceLost, check.Detail);
         }
+
+        SliceLost?.Invoke(check);
     }
 
     /// <summary>

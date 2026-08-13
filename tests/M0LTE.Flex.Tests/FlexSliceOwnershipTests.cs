@@ -237,6 +237,38 @@ public sealed class FlexSliceOwnershipTests
             .Should().Contain("Standing down");
     }
 
+    /// <summary>
+    /// The ordering bug the live station found: standing down, and rebuilding anyway.
+    /// </summary>
+    /// <remarks>
+    /// <para>A host reacts to <c>SliceLost</c> by calling <c>RecoverAsync</c> - that is what the
+    /// event is for. So the health a handler observes when the event fires is a contract, not an
+    /// implementation detail: publish it afterwards and recovery reads a station that has not yet
+    /// been told it is standing down, and rebuilds. On GB7RDG the journal recorded "Recovering",
+    /// then "STANDING DOWN", then "rebuilt on slice 0" seven seconds later.</para>
+    /// <para>Asserted on the health seen from inside the handler rather than by racing a real
+    /// recovery, because the race is exactly what must not be relied on: a test that started a
+    /// rebuild on a background task would pass or fail depending on which thread won.</para>
+    /// </remarks>
+    [Fact]
+    public async Task The_health_a_loss_handler_sees_is_already_the_final_one()
+    {
+        (MockFlexRadio mock, FlexStation station) = await HeadlessAsync(Options(Fast(lossThreshold: 1)));
+        await using var _ = mock;
+        await using var __ = station;
+
+        FlexStationHealth? seenByHandler = null;
+        station.SliceLost += _ => seenByHandler ??= station.Health;
+
+        await mock.StealSliceAsync();
+        await WaitForAsync(() => seenByHandler is not null, "the loss handler to run");
+
+        seenByHandler.Should().Be(
+            FlexStationHealth.Contended,
+            "a handler that starts a rebuild must see the decision that forbids it");
+        station.Health.Should().Be(FlexStationHealth.Contended);
+    }
+
     [Fact]
     public async Task A_stood_down_station_refuses_to_rebuild()
     {
