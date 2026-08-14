@@ -122,7 +122,8 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private int _rfPower = 100;
 
     // The modelled slice receive passband, reported on the slice object as filter_lo/filter_hi
-    // and moved by `slice set <n> filter_lo= filter_hi=`.
+    // and moved by `filt <n> <lo> <hi>` - reported under one name, written under another, as the
+    // transmit filter is too.
     private int _sliceFilterLow = DefaultSliceFilterLowHz;
     private int _sliceFilterHigh = DefaultSliceFilterHighHz;
 
@@ -147,6 +148,12 @@ public sealed class MockFlexRadio : IAsyncDisposable
     /// rfpower</c> is answered <c>err=0</c> and discarded. Measured on a FLEX-6500 — and
     /// indistinguishable from success without reading the value back.</summary>
     public bool DiscardRfPowerWrites { get; set; }
+
+    /// <summary>Models a radio that answers <c>filt</c> with <c>err=0</c> and leaves the slice's
+    /// passband where it was. The shape of the failure that hid in 0.11.0 through 0.13.0 (a write
+    /// under a name the radio reports but does not act on), kept as a switch so a client's
+    /// handling of "accepted and ignored" is testable without a wrong command to produce it.</summary>
+    public bool DiscardSliceFilterWrites { get; set; }
 
     /// <summary>Models a LOST keyup race: <c>xmit 1</c> is answered <c>err=0</c> but no
     /// interlock transition follows - the radio granted somebody else the PA. Pair with
@@ -464,6 +471,38 @@ public sealed class MockFlexRadio : IAsyncDisposable
             await WriteLineAsync($"S{HandleHex}|slice 0 RF_frequency={_sliceFrequency}")
                 .ConfigureAwait(false);
         }
+        else if (cmd.StartsWith("filt ", StringComparison.Ordinal))
+        {
+            // `filt <idx> <lo> <hi>`: the one command that moves a slice's receive passband. Both
+            // edges always travel together, so a client setting one has to carry the other.
+            // Reflected rather than merely acknowledged, since a client that reads back to confirm
+            // has to be able to tell "the radio moved it" from "the radio said err=0 and did nothing".
+            string[] filterParts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (DiscardSliceFilterWrites)
+            {
+                await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
+            }
+            else if (filterParts.Length >= 4
+                && int.TryParse(filterParts[2], out int lowHz)
+                && int.TryParse(filterParts[3], out int highHz))
+            {
+                _sliceFilterLow = lowHz;
+
+                // Clamped rather than refused where a ceiling is modelled at all, mirroring how the
+                // transmit filter behaves - the failure mode a client has to notice is a silent one.
+                _sliceFilterHigh = MaxSliceFilterHighHz is int ceiling
+                    ? Math.Min(highHz, ceiling)
+                    : highHz;
+                await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
+                await WriteLineAsync(
+                    $"S{HandleHex}|slice 0 filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}")
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await WriteLineAsync($"R{seq}|{RejectedError:X8}|").ConfigureAwait(false);
+            }
+        }
         else if (cmd.StartsWith("client bind ", StringComparison.Ordinal))
         {
             // Attach binds to another (SmartSDR) client and succeeds; a headless client is
@@ -514,31 +553,13 @@ public sealed class MockFlexRadio : IAsyncDisposable
                 await WriteLineAsync($"S{HandleHex}|slice 0 mode={mode}").ConfigureAwait(false);
             }
 
-            // The receive passband, likewise reflected rather than merely acknowledged — a client
-            // that widens its filter and reads back to confirm is doing the right thing, and has to
-            // be able to tell "the radio moved it" from "the radio said err=0 and did nothing".
-            string? filterLo = ParseArg(cmd, "filter_lo");
-            string? filterHi = ParseArg(cmd, "filter_hi");
-            if (filterLo is not null && int.TryParse(filterLo, out int lowHz))
-            {
-                _sliceFilterLow = lowHz;
-            }
-
-            if (filterHi is not null && int.TryParse(filterHi, out int highHz))
-            {
-                // Clamped rather than refused where a ceiling is modelled at all, mirroring how the
-                // transmit filter behaves — the failure mode a client has to notice is a silent one.
-                _sliceFilterHigh = MaxSliceFilterHighHz is int ceiling
-                    ? Math.Min(highHz, ceiling)
-                    : highHz;
-            }
-
-            if (filterLo is not null || filterHi is not null)
-            {
-                await WriteLineAsync(
-                    $"S{HandleHex}|slice 0 filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}")
-                    .ConfigureAwait(false);
-            }
+            // `slice set <n> filter_lo=/filter_hi=` is answered err=0 and DISCARDED: a 6500's
+            // passband is reported under those names but only `filt` moves it, the same asymmetry
+            // the transmit filter has. Modelled deliberately, because a mock
+            // that honoured the write let 0.11.0 ship a receive filter that never took on hardware
+            // and a warning that blamed the radio for it. Whether a real radio refuses it with an
+            // error or accepts and ignores it is NOT measured; err=0 is modelled as the harsher of
+            // the two, since a client cannot tell that one from success without a read-back.
         }
         else if (cmd.StartsWith("waveform create", StringComparison.Ordinal))
         {

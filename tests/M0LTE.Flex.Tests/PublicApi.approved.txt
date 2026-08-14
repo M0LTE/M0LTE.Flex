@@ -460,6 +460,7 @@ namespace M0LTE.Flex
         public System.Collections.Generic.IReadOnlyList<float> CapturedWaveformIq { get; }
         public System.Collections.Generic.IReadOnlyList<string> CommandLog { get; }
         public bool DiscardRfPowerWrites { get; set; }
+        public bool DiscardSliceFilterWrites { get; set; }
         public int MaxPowerLevel { get; set; }
         public int? MaxSliceFilterHighHz { get; set; }
         public int RfPower { get; }

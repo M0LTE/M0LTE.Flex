@@ -59,6 +59,53 @@ public sealed class FlexReceiveFilterTests
     }
 
     [Fact]
+    public async Task The_passband_is_moved_with_filt_not_by_writing_back_what_the_slice_reports()
+    {
+        // The regression this file exists for now. A slice REPORTS its passband as filter_lo/
+        // filter_hi and is MOVED by `filt <n> <lo> <hi>`; 0.11.0 through 0.13.0 wrote the reported
+        // names back with `slice set`, which a 6500 does not act on, so the filter never moved on
+        // hardware while every offline test passed against a mock that honoured the write.
+        (MockFlexRadio mock, FlexClient client) = await ConnectAsync();
+        await using (mock)
+        await using (client)
+        {
+            await using FlexStation station = await FlexStation.SetUpHeadlessAsync(
+                client,
+                DaxStreamFormat.FullBandwidth,
+                new FlexStationOptions { ReceiveFilterLowHz = 450, ReceiveFilterHighHz = 2550 });
+
+            mock.CommandLog.Should().Contain("filt 0 450 2550");
+            mock.CommandLog.Should().NotContain(
+                c => c.StartsWith("slice set", StringComparison.Ordinal)
+                     && c.Contains("filter_", StringComparison.Ordinal),
+                "the radio answers that err=0 and discards it");
+        }
+    }
+
+    [Fact]
+    public async Task A_radio_that_takes_the_command_and_ignores_it_is_not_reported_as_too_narrow()
+    {
+        // What the station actually saw: asked for 450-2550, told 0-3000. Wider, not narrower, so
+        // nothing is deaf - and calling that "the radio would not go that wide", as this did in
+        // either direction, sends the reader hunting a bandwidth limit that is not there.
+        (MockFlexRadio mock, FlexClient client) = await ConnectAsync(m => m.DiscardSliceFilterWrites = true);
+        await using (mock)
+        await using (client)
+        {
+            await using FlexStation station = await FlexStation.SetUpHeadlessAsync(
+                client,
+                DaxStreamFormat.FullBandwidth,
+                new FlexStationOptions { ReceiveFilterLowHz = 450, ReceiveFilterHighHz = 2550 });
+
+            station.ReceiveFilterWarning.Should().NotBeNull();
+            station.ReceiveFilterWarning.Should().NotContain(
+                "would not go that wide", "the filter it reports contains the one that was asked for");
+            station.ReceiveFilterWarning.Should().Contain("did not act on it")
+                .And.Contain("filt 0 450 2550", "the command that was ignored is the thing to check");
+        }
+    }
+
+    [Fact]
     public async Task Either_edge_can_be_set_without_the_other()
     {
         (MockFlexRadio mock, FlexClient client) = await ConnectAsync();
@@ -70,7 +117,10 @@ public sealed class FlexReceiveFilterTests
                 DaxStreamFormat.FullBandwidth,
                 new FlexStationOptions { ReceiveFilterHighHz = 7200 });
 
+            // `filt` carries both edges, so the one not asked for has to be read off the slice and
+            // sent back unchanged rather than defaulted to something.
             station.ReceiveFilter.Should().Be((MockFlexRadio.DefaultSliceFilterLowHz, 7200));
+            mock.CommandLog.Should().Contain($"filt 0 {MockFlexRadio.DefaultSliceFilterLowHz} 7200");
         }
     }
 
@@ -85,7 +135,8 @@ public sealed class FlexReceiveFilterTests
                 client, DaxStreamFormat.FullBandwidth, new FlexStationOptions());
 
             mock.CommandLog.Should().NotContain(
-                c => c.Contains("filter_lo", StringComparison.Ordinal)
+                c => c.StartsWith("filt ", StringComparison.Ordinal)
+                     || c.Contains("filter_lo", StringComparison.Ordinal)
                      || c.Contains("filter_hi", StringComparison.Ordinal),
                 "an unasked-for filter change is a change to what the operator hears");
         }
@@ -108,6 +159,8 @@ public sealed class FlexReceiveFilterTests
             station.ReceiveFilter!.Value.High.Should().Be(4000, "what the radio reports is the truth");
             station.ReceiveFilterWarning.Should().NotBeNull();
             station.ReceiveFilterWarning.Should().Contain("9000").And.Contain("4000");
+            station.ReceiveFilterWarning.Should().Contain(
+                "would not go that wide", "this is the direction that phrase is for: the request was cut");
         }
     }
 
