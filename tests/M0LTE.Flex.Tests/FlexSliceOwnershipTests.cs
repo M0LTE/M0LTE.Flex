@@ -269,6 +269,59 @@ public sealed class FlexSliceOwnershipTests
         station.Health.Should().Be(FlexStationHealth.Contended);
     }
 
+    /// <summary>
+    /// The obvious way to write a loss handler must not hang the station.
+    /// </summary>
+    /// <remarks>
+    /// The natural response to <c>SliceLost</c> is to rebuild, and the natural way to write it is
+    /// to block on <c>RecoverAsync</c>. Run on the status thread that raised the event, that waits
+    /// for a slice status only the status thread can deliver: the station hangs holding a slice it
+    /// will never rebuild, which is worse than the fault it was reacting to. Caught while writing
+    /// the test above, where this exact handler deadlocked instead of failing.
+    /// </remarks>
+    [Fact]
+    public async Task A_loss_handler_that_blocks_on_recovery_does_not_hang_the_station()
+    {
+        (MockFlexRadio mock, FlexStation station) = await HeadlessAsync();
+        await using var _ = mock;
+        await using var __ = station;
+
+        FlexRecoveryResult? result = null;
+        station.SliceLost += _ => result = station.RecoverAsync().GetAwaiter().GetResult();
+
+        await mock.StealSliceAsync();
+        await WaitForAsync(() => result is not null, "the blocking handler to finish rebuilding");
+
+        result!.Value.Recovered.Should().BeTrue();
+        station.Health.Should().Be(FlexStationHealth.Healthy);
+        station.VerifyOwnership().IsOwned.Should().BeTrue();
+
+        // And the station is genuinely usable afterwards, not merely unstuck.
+        station.CreatePtt().Key();
+        station.CreatePtt().Unkey();
+    }
+
+    [Fact]
+    public async Task A_subscriber_that_throws_does_not_stop_later_transitions_being_reported()
+    {
+        // A handler's mistake used to travel up the status stream and take the whole client's
+        // parsing with it, which is a much larger failure than the one it started as.
+        (MockFlexRadio mock, FlexStation station) = await HeadlessAsync();
+        await using var _ = mock;
+        await using var __ = station;
+
+        station.SliceLost += _ => throw new InvalidOperationException("a subscriber's bad day");
+
+        var health = new List<FlexStationHealth>();
+        station.HealthChanged += report => health.Add(report.Health);
+
+        await mock.StealSliceAsync();
+        await WaitForAsync(() => health.Contains(FlexStationHealth.SliceLost), "the loss to be reported");
+
+        (await station.RecoverAsync()).Recovered.Should().BeTrue();
+        await WaitForAsync(() => health.Contains(FlexStationHealth.Healthy), "the recovery to be reported");
+    }
+
     [Fact]
     public async Task A_stood_down_station_refuses_to_rebuild()
     {

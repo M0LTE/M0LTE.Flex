@@ -222,6 +222,17 @@ public sealed class FlexStation : IAsyncDisposable
     /// <summary>Timestamps of recent losses, for the contention window. Guarded by itself.</summary>
     private readonly List<DateTimeOffset> _losses = [];
 
+    /// <summary>Subscriber callbacks, run in order on a thread of their own so a handler that
+    /// blocks cannot wedge the status reader that feeds it.</summary>
+    private readonly System.Threading.Channels.Channel<Action> _notifications =
+        System.Threading.Channels.Channel.CreateUnbounded<Action>(
+            new System.Threading.Channels.UnboundedChannelOptions
+            {
+                SingleReader = true,
+            });
+
+    private Task? _notificationPump;
+
     private FlexStationHealth _health = FlexStationHealth.Unbound;
     private bool _watching;
     private bool _disposed;
@@ -785,6 +796,7 @@ public sealed class FlexStation : IAsyncDisposable
         }
 
         _watching = true;
+        _notificationPump ??= Task.Run(PumpNotificationsAsync);
         _client.StatusUpdated += OnStatusUpdated;
     }
 
@@ -861,7 +873,7 @@ public sealed class FlexStation : IAsyncDisposable
             SetHealth(FlexStationHealth.SliceLost, check.Detail);
         }
 
-        SliceLost?.Invoke(check);
+        Notify(() => SliceLost?.Invoke(check));
     }
 
     /// <summary>
@@ -1009,7 +1021,57 @@ public sealed class FlexStation : IAsyncDisposable
         }
 
         Debug.WriteLine($"flex: station {health} - {detail}");
-        HealthChanged?.Invoke(new FlexStationHealthReport(health, detail));
+        Notify(() => HealthChanged?.Invoke(new FlexStationHealthReport(health, detail)));
+    }
+
+    /// <summary>
+    /// Hands a subscriber's callback to the notification pump instead of running it here.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Because "here" is the status-reading thread, and the obvious thing to do in a
+    /// loss handler deadlocks on it.</b> The natural response to <see cref="SliceLost"/> is to
+    /// rebuild, and the natural way to write that is
+    /// <c>RecoverAsync().GetAwaiter().GetResult()</c>. Run on the status thread, that waits for a
+    /// slice status which only the status thread can deliver, and the station hangs with a slice
+    /// it will never rebuild - a worse outcome than the fault it was reacting to. The daemon
+    /// happened to escape it by recovering on a background task, which is a property of the
+    /// caller rather than a guarantee from us.</para>
+    /// <para>A library should not hand a caller a thread it must not block, so it no longer does.
+    /// One pump, in order, so a subscriber still sees transitions in the sequence they happened;
+    /// and exceptions are caught, because a throwing handler used to take the whole status stream
+    /// down with it and a station that stops parsing status is deaf to everything else too.</para>
+    /// <para>State is published before the callback is queued, never after, so a handler still
+    /// observes the decision that prompted it (see <see cref="NoteLoss"/>).</para>
+    /// </remarks>
+    private void Notify(Action callback)
+    {
+        if (!_notifications.Writer.TryWrite(callback))
+        {
+            // Only after the pump is closed, which is teardown. Nobody is listening for
+            // transitions on a station that is going away.
+            Debug.WriteLine("flex: dropped a notification after teardown");
+        }
+    }
+
+    private async Task PumpNotificationsAsync()
+    {
+        while (await _notifications.Reader.WaitToReadAsync().ConfigureAwait(false))
+        {
+            while (_notifications.Reader.TryRead(out Action? callback))
+            {
+                try
+                {
+                    callback();
+                }
+                catch (Exception ex)
+                {
+                    // A subscriber's problem, not the radio's. Swallowed rather than allowed to
+                    // end the pump: one bad handler must not stop every later transition being
+                    // reported, and there is nowhere above this to throw to.
+                    Debug.WriteLine($"flex: a status subscriber threw ({ex.Message}); continuing");
+                }
+            }
+        }
     }
 
     private async Task<string> BindClientAsync(FlexStationOptions options, CancellationToken cancellation)
@@ -1321,6 +1383,24 @@ public sealed class FlexStation : IAsyncDisposable
         }
 
         SetHealth(FlexStationHealth.Disposed, "disposed");
+
+        // Close the pump after the last transition is queued, and give it a moment to drain, so
+        // a subscriber hears that the station is gone. Bounded, because a handler that hangs is
+        // the caller's problem and must not become a teardown that never returns - the whole
+        // point of the pump is that this thread does not wait on somebody else's code.
+        _notifications.Writer.TryComplete();
+        if (_notificationPump is Task pump)
+        {
+            try
+            {
+                await pump.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                Debug.WriteLine("flex: a status subscriber was still running at teardown; leaving it");
+            }
+        }
+
         _recoveryGate.Dispose();
 
         // Only remove a slice we still own. If another client has taken this index since we
