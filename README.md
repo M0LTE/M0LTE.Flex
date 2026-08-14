@@ -211,6 +211,12 @@ Both settings persist after teardown and affect what the radio transmits from th
   GB7RDG on 2026-08-14: asked for 450-2550 Hz, the slice stayed on 0-3000 for the whole setup
   timeout. Whether the radio refuses that write or accepts and ignores it is not measured, because
   the version that sent it swallowed the error code).
+  **And the read-back has to ask.** `filt` moves the filter and says nothing further: measured on the
+  same 6500, a `filt` that visibly narrowed the DSP produced no slice status on the session that sent
+  it, while a second client saw the new edges immediately. A repeated `sub slice all` re-dumps every
+  slice in ~40 ms, and the dump lands before that command's own reply, so the confirmation is a
+  synchronisation point rather than a poll. 0.14.0 sent the right command and then read its own stale
+  copy, reporting a filter that had in fact moved; 0.14.1 asks.
   The radio's ceiling on receive width is **not measured**, unlike the transmit filter's 10 kHz
   clamp, so nothing assumes one: the filter is read back on `ReceiveFilter`, and
   `ReceiveFilterWarning` says which edge missed, in which direction, and whether the radio refused

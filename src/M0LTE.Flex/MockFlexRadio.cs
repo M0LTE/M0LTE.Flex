@@ -127,6 +127,10 @@ public sealed class MockFlexRadio : IAsyncDisposable
     private int _sliceFilterLow = DefaultSliceFilterLowHz;
     private int _sliceFilterHigh = DefaultSliceFilterHighHz;
 
+    // Whether `slice create` has run. Headless has no slice to report until it has, and a
+    // re-subscription is how a client reads the slice back, so the two have to agree.
+    private bool _sliceCreated;
+
     /// <summary>
     /// A ceiling this modelled radio applies to a slice's receive filter high cut, or null (the
     /// default) for a radio that takes whatever it is given.
@@ -425,16 +429,20 @@ public sealed class MockFlexRadio : IAsyncDisposable
         }
         else if (cmd == "sub slice all")
         {
-            await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
-            if (_setupMode == MockSetupMode.Attach)
+            // Subscribing re-dumps every slice that exists, and the dump comes BEFORE the reply -
+            // measured on a 6500, and the ordering matters: it is what lets a client treat the
+            // reply as "the state you asked for is now in hand" instead of polling for it. Attach
+            // mode always has SmartSDR's slice; headless has one only once `slice create` has run.
+            if (_setupMode == MockSetupMode.Attach || _sliceCreated)
             {
-                // Attach mode: SmartSDR has already created the slice. Headless mode has none
-                // until `slice create` runs (below).
                 await WriteLineAsync(
                     $"S{HandleHex}|slice 0 index_letter={_sliceLetter} client_handle=0x{HandleHex} "
-                    + "in_use=1 mode=DIGU RF_frequency=14.100000 "
+                    + $"in_use=1 mode={(_setupMode == MockSetupMode.Attach ? "DIGU" : _sliceMode)} "
+                    + $"RF_frequency={(_setupMode == MockSetupMode.Attach ? "14.100000" : _sliceFrequency)} "
                     + $"filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}").ConfigureAwait(false);
             }
+
+            await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
         }
         else if (cmd.StartsWith("slice create", StringComparison.Ordinal))
         {
@@ -450,6 +458,7 @@ public sealed class MockFlexRadio : IAsyncDisposable
             _sliceFrequency = _setupMode == MockSetupMode.Headless
                 ? PersistedBandFrequency
                 : ParseArg(cmd, "freq") ?? _sliceFrequency;
+            _sliceCreated = true;
             await WriteLineAsync($"R{seq}|0|0").ConfigureAwait(false);
             await WriteLineAsync(
                 $"S{HandleHex}|slice 0 index_letter={_sliceLetter} client_handle=0x{HandleHex} "
@@ -475,8 +484,13 @@ public sealed class MockFlexRadio : IAsyncDisposable
         {
             // `filt <idx> <lo> <hi>`: the one command that moves a slice's receive passband. Both
             // edges always travel together, so a client setting one has to carry the other.
-            // Reflected rather than merely acknowledged, since a client that reads back to confirm
-            // has to be able to tell "the radio moved it" from "the radio said err=0 and did nothing".
+            //
+            // The move is NOT announced back. Measured on a 6500 (fw 4.2.20, 2026-08-14): a `filt`
+            // that demonstrably moved the DSP produced no slice status on the session that sent it,
+            // while a second client asking the radio saw the new edges immediately. Modelled that
+            // way deliberately - a mock that echoed here would pass a client that never asks the
+            // radio again, which is exactly the client that shipped in 0.14.0 and reported a filter
+            // it had itself gone stale on. `sub slice all` is how a client gets the truth back.
             string[] filterParts = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (DiscardSliceFilterWrites)
             {
@@ -494,9 +508,6 @@ public sealed class MockFlexRadio : IAsyncDisposable
                     ? Math.Min(highHz, ceiling)
                     : highHz;
                 await WriteLineAsync($"R{seq}|0|").ConfigureAwait(false);
-                await WriteLineAsync(
-                    $"S{HandleHex}|slice 0 filter_lo={_sliceFilterLow} filter_hi={_sliceFilterHigh}")
-                    .ConfigureAwait(false);
             }
             else
             {

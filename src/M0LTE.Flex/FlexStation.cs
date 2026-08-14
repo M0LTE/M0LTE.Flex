@@ -634,6 +634,11 @@ public sealed class FlexStation : IAsyncDisposable
     /// asked for 450-2550 Hz, the slice stayed on 0-3000 for the whole setup timeout. Since
     /// <c>filt</c> carries both edges in one command, setting one edge means reading the other off
     /// the slice first.</para>
+    /// <para>And the read-back has to ask. The radio does not push this change back to the session
+    /// that made it, so the confirmation comes from re-subscribing (see
+    /// <see cref="RefreshSliceStatusAsync"/>) rather than from waiting to be told. 0.14.0 sent the
+    /// right command and then read its own stale copy for the whole window, which on the same
+    /// station produced a filter that had moved and a warning saying it had not.</para>
     /// </remarks>
     private async Task ApplyReceiveFilterAsync(FlexStationOptions options, CancellationToken cancellation)
     {
@@ -699,8 +704,18 @@ public sealed class FlexStation : IAsyncDisposable
             }
         }
 
+        long nextRefresh = 0;
         while (true)
         {
+            // Ask for the slice again rather than waiting to be told. See RefreshSliceStatusAsync:
+            // the change we just made is not pushed back to the session that made it, so a poll
+            // over the cached object would sit here re-reading the value from `slice create`.
+            if (asked && Environment.TickCount64 >= nextRefresh)
+            {
+                await RefreshSliceStatusAsync(cancellation).ConfigureAwait(false);
+                nextRefresh = Environment.TickCount64 + 500;
+            }
+
             if (TryReadReceiveFilter(out int lowHz, out int highHz))
             {
                 ReceiveFilter = (lowHz, highHz);
@@ -727,6 +742,26 @@ public sealed class FlexStation : IAsyncDisposable
 
         ReceiveFilterWarning = DescribeReceiveFilterMiss(options, sent, refusedWith);
     }
+
+    /// <summary>
+    /// Re-subscribes to slice status, which makes the radio re-send the slice objects.
+    /// </summary>
+    /// <remarks>
+    /// <para>The read-back's synchronisation point, and the reason it is not a poll. Measured on a
+    /// 6500 (fw 4.2.20, 2026-08-14): a <c>filt</c> that demonstrably moved the DSP - the audio in
+    /// DAX narrowed, and a second client asking the radio saw <c>filter_lo=450 filter_hi=2550</c> -
+    /// produced no slice status at all on the session that sent it, for the whole 5 s window. A
+    /// repeated <c>sub slice all</c> on that same session re-dumps every slice in ~40 ms.</para>
+    /// <para>The dump precedes the subscribe's own <c>R</c> reply on the connection, and one reader
+    /// processes the connection in order, so awaiting the reply means the state is already stored.
+    /// Cheap enough to do inside a read-back loop, and harmless: it is a subscription on our own
+    /// session, not a change to anything the radio is doing.</para>
+    /// <para>Only the slice path needs it. The transmit object does push its changes back (the
+    /// 10 kHz transmit-filter clamp was measured through exactly that read-back), which is a
+    /// difference between the two objects rather than a rule about the radio.</para>
+    /// </remarks>
+    private Task RefreshSliceStatusAsync(CancellationToken cancellation) =>
+        TryBestEffortAsync("sub slice all", cancellation);
 
     /// <summary>Reads the passband the slice is reporting right now, if its status has arrived.</summary>
     private bool TryReadReceiveFilter(out int lowHz, out int highHz)
