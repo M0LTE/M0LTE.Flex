@@ -83,6 +83,34 @@ public sealed class FlexReceiveFilterTests
     }
 
     [Fact]
+    public async Task The_read_back_asks_the_radio_again_rather_than_waiting_to_be_told()
+    {
+        // The second half of the same lesson. `filt` moves the filter and says nothing further:
+        // measured on a 6500, a filt that visibly narrowed the DSP produced no slice status on the
+        // session that sent it, so 0.14.0 read back the value from `slice create` for the whole
+        // window and reported a filter it had itself gone stale on. Re-subscribing re-dumps the
+        // slice, and the dump lands before the subscribe's own reply, so it is a synchronisation
+        // point rather than a poll.
+        (MockFlexRadio mock, FlexClient client) = await ConnectAsync();
+        await using (mock)
+        await using (client)
+        {
+            await using FlexStation station = await FlexStation.SetUpHeadlessAsync(
+                client,
+                DaxStreamFormat.FullBandwidth,
+                new FlexStationOptions { ReceiveFilterLowHz = 450, ReceiveFilterHighHz = 2550 });
+
+            List<string> log = [.. mock.CommandLog];
+            int filt = log.IndexOf("filt 0 450 2550");
+            filt.Should().BeGreaterThanOrEqualTo(0, "the filter has to have been set at all");
+            log.FindIndex(filt + 1, c => c == "sub slice all").Should().BeGreaterThan(
+                filt, "the state after the write is only knowable by asking for it again");
+            station.ReceiveFilter.Should().Be((450, 2550));
+            station.ReceiveFilterWarning.Should().BeNull();
+        }
+    }
+
+    [Fact]
     public async Task A_radio_that_takes_the_command_and_ignores_it_is_not_reported_as_too_narrow()
     {
         // What the station actually saw: asked for 450-2550, told 0-3000. Wider, not narrower, so
