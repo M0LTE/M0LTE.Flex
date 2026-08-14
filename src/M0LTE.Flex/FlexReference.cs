@@ -80,7 +80,7 @@ public sealed record FlexReferenceStatus(
             // Worth spelling out: the radio is not using what it was told to use, and on this
             // hardware the fix is a reboot, not a retry.
             return $"{Name(Setting)} set but {(Locked ? "not in use" : "not locked")} "
-                + $"(running on {Name(State)}{ppb}) — reboot with the reference applied";
+                + $"(running on {Name(State)}{ppb}) - reboot with the reference applied";
         }
 
         return $"{source} {(Locked ? "locked" : "UNLOCKED")}{ppb}";

@@ -202,12 +202,20 @@ Both settings persist after teardown and affect what the radio transmits from th
 - **Receive has a filter of its own, on the slice.** The transmit filter governs what leaves the
   radio; what reaches DAX-RX is capped separately by the slice's own passband, so widening only the
   transmit side gives a wide signal out and an ordinary ~3 kHz window back in.
-  `ReceiveFilterLowHz`/`ReceiveFilterHighHz` set it (`slice set <n> filter_lo= filter_hi=`), headless
-  only — in attach mode the slice is SmartSDR's. Unlike the transmit filter this is slice state, so it
-  goes away with the slice rather than persisting on the radio. The radio's ceiling on receive width
-  is **not measured**, unlike the transmit filter's 10 kHz clamp, so nothing assumes one: the filter
-  is read back on `ReceiveFilter`, and `ReceiveFilterWarning` says so if the radio did not land where
-  it was asked. `MockFlexRadio.MaxSliceFilterHighHz` models a radio that will not go that wide.
+  `ReceiveFilterLowHz`/`ReceiveFilterHighHz` set it (`filt <n> <lo> <hi>`), headless only - in attach
+  mode the slice is SmartSDR's. Unlike the transmit filter this is slice state, so it goes away with
+  the slice rather than persisting on the radio. **Note the same report-one-way/write-another
+  asymmetry the transmit filter has**: a slice *reports* its passband as `filter_lo`/`filter_hi`, but
+  only `filt` moves it. Writing the reported names back with `slice set` does not move the filter,
+  which is what 0.11.0 through 0.13.0 did, so the receive filter never took on hardware (observed at
+  GB7RDG on 2026-08-14: asked for 450-2550 Hz, the slice stayed on 0-3000 for the whole setup
+  timeout. Whether the radio refuses that write or accepts and ignores it is not measured, because
+  the version that sent it swallowed the error code).
+  The radio's ceiling on receive width is **not measured**, unlike the transmit filter's 10 kHz
+  clamp, so nothing assumes one: the filter is read back on `ReceiveFilter`, and
+  `ReceiveFilterWarning` says which edge missed, in which direction, and whether the radio refused
+  the command or took it and did nothing. `MockFlexRadio.MaxSliceFilterHighHz` models a radio that
+  will not go that wide; `MockFlexRadio.DiscardSliceFilterWrites` one that accepts and ignores.
 
 ## Testing without a radio
 

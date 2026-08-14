@@ -235,7 +235,7 @@ public sealed class FlexWaveform : IAsyncDisposable
             // no mirror step to get wrong. Refuse rather than ship a spectral inversion.
             throw new FlexProtocolException(
                 $"underlying_mode={options.UnderlyingMode} transmits the spectrum mirrored (a baseband "
-                + "component at −f is emitted at slice+f), so a band placed on it would go out "
+                + "component at -f is emitted at slice+f), so a band placed on it would go out "
                 + "inverted; use RAW, LSB or DIGL, which are upright and reach the same frequencies");
         }
 
@@ -392,7 +392,7 @@ public sealed class FlexWaveform : IAsyncDisposable
             && gotHigh < wantHigh)
         {
             TransmitFilterWarning =
-                $"transmit filter is {gotLow}–{gotHigh} Hz, narrower than the requested high cut of "
+                $"transmit filter is {gotLow}-{gotHigh} Hz, narrower than the requested high cut of "
                 + $"{wantHigh} Hz (the radio clamps it); anything beyond {gotHigh} Hz from the carrier "
                 + "will not reach the air";
             Debug.WriteLine($"flex: {TransmitFilterWarning}");
@@ -463,7 +463,7 @@ public sealed class FlexWaveform : IAsyncDisposable
         if (_options.Band is not null && _options.SliceFrequencyMhz is not null)
         {
             throw new FlexProtocolException(
-                "SliceFrequencyMhz and Band are mutually exclusive — Band derives the slice frequency "
+                "SliceFrequencyMhz and Band are mutually exclusive: Band derives the slice frequency "
                 + "itself, so setting both cannot be honoured");
         }
 

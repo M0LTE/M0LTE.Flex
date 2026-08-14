@@ -86,9 +86,10 @@ public sealed record FlexStationOptions
 
     /// <summary>
     /// Low and high cut of the <b>slice's receive</b> filter (Hz), applied with
-    /// <c>slice set &lt;n&gt; filter_lo= filter_hi=</c>. Null (the default) leaves the slice's own
-    /// setting alone; either may be set without the other. Headless only — in attach mode the
-    /// slice belongs to SmartSDR.
+    /// <c>filt &lt;n&gt; &lt;lo&gt; &lt;hi&gt;</c>. Null (the default) leaves the slice's own
+    /// setting alone; either may be set without the other, in which case the edge not asked for is
+    /// held at whatever the slice reports. Headless only - in attach mode the slice belongs to
+    /// SmartSDR.
     /// </summary>
     /// <remarks>
     /// <para>The receive counterpart of <see cref="TransmitFilterHighHz"/>, and the other half of
@@ -523,7 +524,7 @@ public sealed class FlexStation : IAsyncDisposable
             throw new FlexProtocolException(
                 $"transmit power {want} is above this radio's Max Power Level of {ceiling}. "
                 + "The radio rejects a power above that ceiling rather than reducing it, so raise "
-                + "the limit at the rig (Settings → Transmit → Max Power Level) or ask for less.");
+                + "the limit at the rig (Settings -> Transmit -> Max Power Level) or ask for less.");
         }
 
         await _client.SendCommandExpectOkAsync($"transmit set rfpower={want}", cancellation)
@@ -620,11 +621,19 @@ public sealed class FlexStation : IAsyncDisposable
     /// Sets the slice's receive filter if asked to, then reads back whatever is in force.
     /// </summary>
     /// <remarks>
-    /// The receive half of <see cref="ApplyTransmitFilterAsync"/>, and read back for the same
+    /// <para>The receive half of <see cref="ApplyTransmitFilterAsync"/>, and read back for the same
     /// reason: a slice on an ordinary 3 kHz data filter delivers nothing above 3 kHz to DAX-RX
     /// however wide the signal on the air is. Where the transmit path knows its ceiling (10 kHz,
     /// measured), this one does not, so a read-back that disagrees with the request becomes
-    /// <see cref="ReceiveFilterWarning"/> rather than an exception or a silent success.
+    /// <see cref="ReceiveFilterWarning"/> rather than an exception or a silent success.</para>
+    /// <para>The write is <c>filt &lt;n&gt; &lt;lo&gt; &lt;hi&gt;</c>. The slice REPORTS its passband
+    /// as <c>filter_lo</c>/<c>filter_hi</c>, and 0.11.0 through 0.13.0 tried to set it by writing
+    /// those names back with <c>slice set</c>, which does not move it: the same
+    /// report-one-way/write-another asymmetry the transmit filter has (reported <c>lo</c>/<c>hi</c>,
+    /// set with <c>filter_low=</c>/<c>filter_high=</c>). Observed on a 6500 at GB7RDG, 2026-08-14 -
+    /// asked for 450-2550 Hz, the slice stayed on 0-3000 for the whole setup timeout. Since
+    /// <c>filt</c> carries both edges in one command, setting one edge means reading the other off
+    /// the slice first.</para>
     /// </remarks>
     private async Task ApplyReceiveFilterAsync(FlexStationOptions options, CancellationToken cancellation)
     {
@@ -637,32 +646,62 @@ public sealed class FlexStation : IAsyncDisposable
             return;
         }
 
-        var parts = new List<string>(2);
-        if (options.ReceiveFilterLowHz is int low)
-        {
-            parts.Add($"filter_lo={low}");
-        }
-
-        if (options.ReceiveFilterHighHz is int high)
-        {
-            parts.Add($"filter_hi={high}");
-        }
-
-        if (parts.Count > 0)
-        {
-            await TryBestEffortAsync(
-                $"slice set {SliceIndex} {string.Join(' ', parts)}", cancellation).ConfigureAwait(false);
-        }
-
         long deadline = Environment.TickCount64 + (long)options.SetupTimeout.TotalMilliseconds;
+        bool asked = options.ReceiveFilterLowHz is not null || options.ReceiveFilterHighHz is not null;
+        uint? refusedWith = null;
+        string sent = "";
+
+        if (asked)
+        {
+            // An edge that was not asked for has to be held where it is, which is only knowable once
+            // the slice has reported its passband. Asking for both edges needs no such wait.
+            bool needsCurrent = options.ReceiveFilterLowHz is null || options.ReceiveFilterHighHz is null;
+            while (needsCurrent && !TryReadReceiveFilter(out _, out _)
+                && Environment.TickCount64 <= deadline)
+            {
+                await Task.Delay(20, cancellation).ConfigureAwait(false);
+            }
+
+            bool haveCurrent = TryReadReceiveFilter(out int nowLow, out int nowHigh);
+            if (needsCurrent && !haveCurrent)
+            {
+                ReceiveFilterWarning =
+                    "the slice never reported the receive filter it is on, so the one edge asked for "
+                    + "could not be set without guessing at the other; its filter was left alone";
+                return;
+            }
+
+            int low = options.ReceiveFilterLowHz ?? nowLow;
+            int high = options.ReceiveFilterHighHz ?? nowHigh;
+            if (low >= high)
+            {
+                ReceiveFilterWarning =
+                    $"a receive filter of {low}-{high} Hz is upside down once the edge not asked for is "
+                    + "held where the slice already had it; its filter was left alone";
+                return;
+            }
+
+            sent = $"filt {SliceIndex} {low} {high}";
+            try
+            {
+                // Not TryBestEffortAsync: an error code here is the difference between "the radio
+                // refused it" and "the radio took it and did nothing", and it is only readable once.
+                FlexResult result = await _client.SendCommandAsync(sent, cancellation).ConfigureAwait(false);
+                if (!result.IsOk)
+                {
+                    refusedWith = result.Error;
+                }
+            }
+            catch (FlexProtocolException)
+            {
+                // A fault is not worth failing bring-up over; the read-back below decides what to
+                // report, and the filter not moving is what the operator needs to hear either way.
+            }
+        }
+
         while (true)
         {
-            if (_client.TryFindObject($"slice {SliceIndex}", _ => true, out string name)
-                && _client.TryGetObject(name, out IReadOnlyDictionary<string, string> slice)
-                && slice.TryGetValue("filter_lo", out string? lo)
-                && slice.TryGetValue("filter_hi", out string? hi)
-                && int.TryParse(lo, NumberStyles.Integer, CultureInfo.InvariantCulture, out int lowHz)
-                && int.TryParse(hi, NumberStyles.Integer, CultureInfo.InvariantCulture, out int highHz))
+            if (TryReadReceiveFilter(out int lowHz, out int highHz))
             {
                 ReceiveFilter = (lowHz, highHz);
                 bool lowAsAsked = options.ReceiveFilterLowHz is not int wantLow || lowHz == wantLow;
@@ -681,11 +720,40 @@ public sealed class FlexStation : IAsyncDisposable
             await Task.Delay(20, cancellation).ConfigureAwait(false);
         }
 
-        if (parts.Count == 0)
+        if (!asked)
         {
             return;
         }
 
+        ReceiveFilterWarning = DescribeReceiveFilterMiss(options, sent, refusedWith);
+    }
+
+    /// <summary>Reads the passband the slice is reporting right now, if its status has arrived.</summary>
+    private bool TryReadReceiveFilter(out int lowHz, out int highHz)
+    {
+        lowHz = 0;
+        highHz = 0;
+        return _client.TryFindObject($"slice {SliceIndex}", _ => true, out string name)
+            && _client.TryGetObject(name, out IReadOnlyDictionary<string, string> slice)
+            && slice.TryGetValue("filter_lo", out string? lo)
+            && slice.TryGetValue("filter_hi", out string? hi)
+            && int.TryParse(lo, NumberStyles.Integer, CultureInfo.InvariantCulture, out lowHz)
+            && int.TryParse(hi, NumberStyles.Integer, CultureInfo.InvariantCulture, out highHz);
+    }
+
+    /// <summary>
+    /// Says which edge did not land where it was asked to, in which direction, and what that costs.
+    /// </summary>
+    /// <remarks>
+    /// Per edge and directional because the two misses are not the same failure. A filter narrower
+    /// than asked for means the client is deaf outside what the radio reports, which is the case
+    /// worth shouting about. A filter wider than asked for loses nothing - it is the request that
+    /// went missing, not the signal - and reporting that as "the radio would not go that wide", as
+    /// 0.11.0 through 0.13.0 did whichever way the miss went, sends the reader looking for a
+    /// bandwidth limit that is not there.
+    /// </remarks>
+    private string DescribeReceiveFilterMiss(FlexStationOptions options, string sent, uint? refusedWith)
+    {
         string asked = string.Join(
             ", ",
             new[]
@@ -693,10 +761,44 @@ public sealed class FlexStation : IAsyncDisposable
                 options.ReceiveFilterLowHz is int lw ? $"low {lw} Hz" : null,
                 options.ReceiveFilterHighHz is int hw ? $"high {hw} Hz" : null,
             }.Where(part => part is not null));
-        ReceiveFilterWarning = ReceiveFilter is (int gotLow, int gotHigh)
-            ? $"asked the slice for a receive filter of {asked} and it reports {gotLow}-{gotHigh} Hz — "
-              + "the radio would not go that wide, so anything outside what it reports is not being heard"
-            : $"asked the slice for a receive filter of {asked} but it never reported one back";
+
+        if (ReceiveFilter is not (int gotLow, int gotHigh))
+        {
+            return $"asked the slice for a receive filter of {asked} but it never reported one back."
+                + (refusedWith is uint refusal ? $" The radio refused '{sent}' (err=0x{refusal:X8})." : "");
+        }
+
+        var edges = new List<string>(2);
+        bool cutInto = false;
+        if (options.ReceiveFilterLowHz is int wantLow && gotLow != wantLow)
+        {
+            bool narrower = gotLow > wantLow;
+            cutInto |= narrower;
+            edges.Add($"the low cut is at {gotLow} Hz, {(narrower ? "above" : "below")} the {wantLow} Hz asked for");
+        }
+
+        if (options.ReceiveFilterHighHz is int wantHigh && gotHigh != wantHigh)
+        {
+            bool narrower = gotHigh < wantHigh;
+            cutInto |= narrower;
+            edges.Add($"the high cut is at {gotHigh} Hz, {(narrower ? "below" : "above")} the {wantHigh} Hz asked for");
+        }
+
+        // Why it did not land, which the error code settles: a refusal and a clamp look identical
+        // from the read-back alone, and only one of them means the radio has a width limit.
+        string cause = refusedWith is uint error
+            ? $"The radio refused '{sent}' (err=0x{error:X8})."
+            : cutInto
+                ? "The radio would not go that wide."
+                : $"The radio answered err=0 to '{sent}' and did not act on it.";
+
+        string cost = cutInto
+            ? "Anything outside what it reports is not being heard."
+            : "Nothing inside the passband that was asked for is lost, but the narrowing did not "
+              + "take, so the slice is passing more band than was wanted.";
+
+        return $"asked the slice for a receive filter of {asked} and it reports {gotLow}-{gotHigh} Hz: "
+            + string.Join("; ", edges) + ". " + cause + " " + cost;
     }
 
     /// <summary>Creates the DAX-RX audio source. It follows <see cref="Lease"/>, so a rebuilt
@@ -1263,7 +1365,7 @@ public sealed class FlexStation : IAsyncDisposable
             // Expected: we are already the owning GUI client, so the explicit re-bind is
             // redundant. DAX works regardless — swallow it (debug-log only, never throw).
             Debug.WriteLine(
-                $"flex: headless client bind redundant (0x{bind.Error:X8}); continuing — already GUI owner");
+                $"flex: headless client bind redundant (0x{bind.Error:X8}); continuing, already GUI owner");
         }
     }
 
