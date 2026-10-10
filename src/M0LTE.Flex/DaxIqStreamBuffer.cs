@@ -23,9 +23,10 @@ namespace M0LTE.Flex;
 /// </remarks>
 public sealed class DaxIqStreamBuffer
 {
-    // Holes remembered between ingest and read. Far more than half a second of DAX-IQ can carry in
-    // practice; if it ever fills, a new hole is merged into the newest one, so it is still
-    // reported, slightly early.
+    // Holes remembered between ingest and read. Holes that overflow has already dropped past are
+    // folded into the tail loss before a new one is queued, so only holes still inside the ring
+    // take a slot. If it ever fills even so, a new hole is merged into the newest one, so it is
+    // still reported, early.
     private const int MaxPendingGaps = 64;
 
     private readonly float[] _ring;
@@ -88,7 +89,9 @@ public sealed class DaxIqStreamBuffer
 
                     // The hole is just before this packet's first pair. Its size is an estimate:
                     // the radio's packets are all one size at a given rate, so the one that arrived
-                    // stands in for the ones that did not.
+                    // stands in for the ones that did not. A packet reordered in flight reads here
+                    // as a large hole (0, 1, 3, 2 counts 1 then 14 missing) and its data is
+                    // delivered late; nothing reorders, and on a LAN that is rare enough to accept.
                     RecordGap(_writtenPairs, (long)lostPackets * Math.Max(pairs, 1));
                 }
             }
@@ -115,8 +118,15 @@ public sealed class DaxIqStreamBuffer
     /// <b>float</b> elements written (always even), or 0 once stopped and drained. A block never
     /// spans a hole in the stream: it ends at the last pair before one, and the read that returns
     /// the first pair after it adds the hole's size to <see cref="SamplesLost"/>.</summary>
+    /// <exception cref="ArgumentException"><paramref name="destination"/> holds less than one
+    /// pair, so a read could return nothing while data waits.</exception>
     public int Read(Span<float> destination)
     {
+        if (destination.Length < 2)
+        {
+            throw new ArgumentException("the destination must hold at least one I,Q pair", nameof(destination));
+        }
+
         lock (_lock)
         {
             while (_count < 2 && !_stopped)
@@ -214,6 +224,15 @@ public sealed class DaxIqStreamBuffer
     // the lock.
     private void RecordGap(long at, long pairs)
     {
+        // Holes at or behind the oldest pair still held lie before the next block anyway; moving
+        // them to the tail loss keeps a stalled reader's queue from filling with them.
+        while (_gapCount > 0 && _gapAt[_gapFirst] <= _readPairs)
+        {
+            _tailLossPairs += _gapPairs[_gapFirst];
+            _gapFirst = (_gapFirst + 1) % MaxPendingGaps;
+            _gapCount--;
+        }
+
         if (_gapCount > 0)
         {
             int newest = (_gapFirst + _gapCount - 1) % MaxPendingGaps;

@@ -116,6 +116,40 @@ public sealed class DaxIqStreamBufferTests
     }
 
     [Fact]
+    public void A_stalled_reader_still_gets_every_hole_inside_the_ring_marked_after_far_more_holes_than_the_queue_holds()
+    {
+        // 100 one-pair packets, every other counter value missing: 99 one-pair holes, while the
+        // ring keeps only the last 4 pairs. The holes overflow has dropped past must not crowd out
+        // the ones still in the ring.
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4);
+        for (int k = 0; k < 100; k++)
+        {
+            buffer.Ingest((2 * k) & 0xF, BuildPayload([(k, k)]));
+        }
+
+        var output = new float[64];
+        var firsts = new List<float>();
+        for (int r = 0; r < 4; r++)
+        {
+            buffer.Read(output).Should().Be(2, "each pair still held has a hole before it");
+            firsts.Add(output[0]);
+        }
+
+        firsts.Should().Equal(96f, 97f, 98f, 99f);
+        buffer.SamplesLost.Should().Be(96 + 99, "96 pairs overwritten plus 99 one-pair packets that never came");
+    }
+
+    [Fact]
+    public void A_destination_smaller_than_one_pair_is_refused()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4);
+        buffer.Ingest(0, BuildPayload([(1f, 1f)]));
+
+        FluentActions.Invoking(() => buffer.Read(new float[1])).Should().Throw<ArgumentException>();
+        buffer.Read(new float[2]).Should().Be(2);
+    }
+
+    [Fact]
     public void A_gapless_stream_reports_no_loss_and_reads_across_packet_boundaries()
     {
         var buffer = new DaxIqStreamBuffer(capacityPairs: 64);
