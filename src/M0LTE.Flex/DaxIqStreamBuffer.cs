@@ -79,25 +79,37 @@ public sealed class DaxIqStreamBuffer
         int pairs = payload.Length / 8;                    // 8 bytes = one complex (I,Q) float32 pair; a trailing <8 tail is ignored
         lock (_lock)
         {
+            PacketsReceived++;
             if (_lastPacketCount >= 0)
             {
                 int expected = (_lastPacketCount + 1) & 0xF;
-                if (packetCount != expected)
+                int lostPackets = (packetCount - expected) & 0xF;
+
+                // A count at or up to 7 behind the last one is a packet that arrived late
+                // (reordered in flight) or twice. Read as a jump forward it would be a phantom hole
+                // of 8 to 15 packets that splits the stream (0, 1, 3, 2, 4 would report 1, 14 and 1
+                // missing), so it is dropped instead: no hole, its data discarded (a late packet's
+                // place was already reported as a hole when the one after it arrived), and the last
+                // count left alone. The cost is that a genuine burst of 8 to 15 lost packets,
+                // roughly 45 to 80 ms at 96 kSPS, is misread as one late packet and its hole goes
+                // unreported; the 4-bit counter cannot tell the two apart.
+                if (lostPackets >= 8)
                 {
-                    int lostPackets = (packetCount - expected) & 0xF;
+                    return;
+                }
+
+                if (lostPackets > 0)
+                {
                     PacketsLost += lostPackets;
 
                     // The hole is just before this packet's first pair. Its size is an estimate:
                     // the radio's packets are all one size at a given rate, so the one that arrived
-                    // stands in for the ones that did not. A packet reordered in flight reads here
-                    // as a large hole (0, 1, 3, 2 counts 1 then 14 missing) and its data is
-                    // delivered late; nothing reorders, and on a LAN that is rare enough to accept.
+                    // stands in for the ones that did not.
                     RecordGap(_writtenPairs, (long)lostPackets * Math.Max(pairs, 1));
                 }
             }
 
             _lastPacketCount = packetCount & 0xF;
-            PacketsReceived++;
 
             for (int i = 0; i < pairs; i++)
             {

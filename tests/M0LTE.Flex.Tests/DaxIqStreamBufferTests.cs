@@ -38,11 +38,50 @@ public sealed class DaxIqStreamBufferTests
         buffer.Ingest(0, one);
         buffer.Ingest(1, one);
         buffer.Ingest(3, one); // skipped 2 -> one lost
-        buffer.Ingest(15, one); // skipped 4..14 -> eleven lost
+        buffer.Ingest(10, one); // skipped 4..9 -> six lost
+        buffer.Ingest(15, one); // skipped 11..14 -> four lost
         buffer.Ingest(0, one); // wrap 15 -> 0, contiguous, none lost
 
-        buffer.PacketsReceived.Should().Be(5);
-        buffer.PacketsLost.Should().Be(12);
+        buffer.PacketsReceived.Should().Be(6);
+        buffer.PacketsLost.Should().Be(11);
+    }
+
+    [Fact]
+    public void A_packet_that_arrives_late_is_dropped_rather_than_read_as_a_burst_of_loss()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 64);
+        buffer.Ingest(0, BuildPayload([(0f, 0f), (0f, 0f)]));
+        buffer.Ingest(1, BuildPayload([(1f, 1f), (1f, 1f)]));
+        buffer.Ingest(3, BuildPayload([(3f, 3f), (3f, 3f)])); // 2 not here yet: a one-packet hole
+        buffer.Ingest(2, BuildPayload([(2f, 2f), (2f, 2f)])); // 2 arrives late: dropped, no hole
+        buffer.Ingest(4, BuildPayload([(4f, 4f), (4f, 4f)])); // follows 3: contiguous
+
+        buffer.PacketsLost.Should().Be(1);
+
+        var output = new float[64];
+        buffer.Read(output).Should().Be(8, "packets 0 and 1, up to the hole where 2 should be");
+        buffer.SamplesLost.Should().Be(0);
+        buffer.Read(output).Should().Be(8, "packets 3 and 4, with nothing of the late 2 between them");
+        output[0].Should().Be(3f);
+        output[4].Should().Be(4f);
+        buffer.SamplesLost.Should().Be(2, "one missing packet of two pairs, and nothing more");
+    }
+
+    [Fact]
+    public void A_duplicated_packet_is_dropped_and_reports_no_loss()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 64);
+        buffer.Ingest(0, BuildPayload([(0f, 0f)]));
+        buffer.Ingest(1, BuildPayload([(1f, 1f)]));
+        buffer.Ingest(1, BuildPayload([(1f, 1f)])); // the same packet again
+        buffer.Ingest(2, BuildPayload([(2f, 2f)]));
+
+        buffer.PacketsLost.Should().Be(0);
+
+        var output = new float[64];
+        buffer.Read(output).Should().Be(6, "three pairs, the duplicate not among them");
+        output[4].Should().Be(2f);
+        buffer.SamplesLost.Should().Be(0);
     }
 
     [Fact]
