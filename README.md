@@ -14,7 +14,7 @@ plus the discovery, command/status session and VITA-49 DAX plumbing underneath.
 └──────────────┘                           └───────────────────────────┘
 ```
 
-- **Targets** `net10.0`. One dependency: [`M0LTE.Radio.Audio`](https://www.nuget.org/packages/M0LTE.Radio.Audio) — the shared `IAudioInput`/`IAudioOutput`/`IPttControl` seam.
+- **Targets** `net10.0`. One dependency: [`M0LTE.Radio.Audio`](https://www.nuget.org/packages/M0LTE.Radio.Audio), the shared `IAudioInput`/`IAudioOutput`/`IIqSource`/`IPttControl` seam.
 - **Two bring-up modes**: *headless* (this client creates its own slice — no SmartSDR
   running) and *attach* (bind a slice a running SmartSDR already owns).
 - **Both DAX transports**: reduced-bandwidth 24 kHz s16 and full-bandwidth 48 kHz float32.
@@ -90,8 +90,9 @@ int got = iq.Read(block);          // got floats = got / 2 complex samples
 Console.WriteLine($"{iq.PacketsReceived} packets, {iq.PacketsLost} lost");
 ```
 
-`FlexDaxIqSource` implements `IIqSource` (`SampleRate` / `CentreFrequencyHz` / `Read`), so a
-digital-downconverter front end can fan it into several narrowband channels.
+`FlexDaxIqSource` implements `M0LTE.Radio.Audio.IIqSource` (`SampleRate`, `CentreFrequencyHz`, `TuningGeneration`, `SamplesLost`, `Read`), so a digital-downconverter front end can fan it into several narrowband channels, and the same front end takes any other IQ source that implements it. A block never spans a hole in the stream: `SamplesLost` goes up on the block after one, exactly for a ring overflow and estimated at one packet's worth per missing VITA packet. `TuningGeneration` stays 0, since the source owns its panadapter at a fixed frequency and rate.
+
+`IIqSource` lived in this package until 0.15.0. Code that named `M0LTE.Flex.IIqSource` now uses `M0LTE.Radio.Audio`.
 
 ## IQ transmit (Waveform API)
 
