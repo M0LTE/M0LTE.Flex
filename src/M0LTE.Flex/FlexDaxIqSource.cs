@@ -1,4 +1,5 @@
 using System.Globalization;
+using M0LTE.Radio.Audio;
 
 namespace M0LTE.Flex;
 
@@ -62,6 +63,17 @@ public sealed class FlexDaxIqSource : IIqSource, IAsyncDisposable
 
     /// <inheritdoc />
     public double CentreFrequencyHz { get; }
+
+    /// <inheritdoc />
+    /// <remarks>Always 0: the source creates its own panadapter at a fixed frequency and rate.
+    /// A retune of that panadapter by another client is not tracked.</remarks>
+    public long TuningGeneration => 0;
+
+    /// <inheritdoc />
+    /// <remarks>Ring overflow (the reader fell behind) is exact; packets lost in flight are
+    /// estimated from the VITA packet counter at one packet's worth of samples each. See
+    /// <see cref="DaxIqStreamBuffer.SamplesLost"/>.</remarks>
+    public long SamplesLost => _buffer.SamplesLost;
 
     /// <summary>The DAX-IQ VITA stream id the radio tags our packets with.</summary>
     public uint StreamId => _streamId;

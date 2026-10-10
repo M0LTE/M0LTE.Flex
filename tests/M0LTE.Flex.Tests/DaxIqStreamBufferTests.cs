@@ -67,6 +67,65 @@ public sealed class DaxIqStreamBufferTests
         buffer.Read(new float[4]).Should().Be(0, "stopped and drained is end-of-stream");
     }
 
+    [Fact]
+    public void A_block_ends_before_packets_lost_in_flight_and_the_next_one_reports_them()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 64);
+        buffer.Ingest(0, BuildPayload([(1f, 1f), (2f, 2f), (3f, 3f)]));
+        buffer.Ingest(3, BuildPayload([(4f, 4f), (5f, 5f), (6f, 6f)])); // packets 1 and 2 lost
+
+        var output = new float[64];
+        buffer.Read(output).Should().Be(6, "the block stops at the last pair before the hole");
+        output[4].Should().Be(3f);
+        buffer.SamplesLost.Should().Be(0, "the hole is reported on the block after it");
+
+        buffer.Read(output).Should().Be(6);
+        output[0].Should().Be(4f);
+        buffer.SamplesLost.Should().Be(6, "two missing packets, estimated at three pairs each");
+    }
+
+    [Fact]
+    public void Ring_overflow_is_reported_exactly_before_the_oldest_pair_still_held()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4);
+        buffer.Ingest(0, BuildPayload([(1f, 1f), (2f, 2f), (3f, 3f), (4f, 4f), (5f, 5f), (6f, 6f)]));
+
+        var output = new float[64];
+        buffer.Read(output).Should().Be(8);
+        output[0].Should().Be(3f, "the two oldest pairs were overwritten");
+        buffer.SamplesLost.Should().Be(2);
+        buffer.SamplesDropped.Should().Be(2);
+    }
+
+    [Fact]
+    public void An_in_flight_hole_that_overflow_has_dropped_past_is_still_reported_once()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4);
+        buffer.Ingest(0, BuildPayload([(1f, 1f), (2f, 2f)]));
+        buffer.Ingest(2, BuildPayload([(3f, 3f), (4f, 4f)])); // packet 1 lost: 2 pairs, before pair 3
+        buffer.Ingest(3, BuildPayload([(5f, 5f), (6f, 6f), (7f, 7f)])); // overflow drops pairs 1 to 3
+
+        var output = new float[64];
+        buffer.Read(output).Should().Be(8);
+        output[0].Should().Be(4f);
+        buffer.SamplesLost.Should().Be(5, "three pairs overwritten plus the two-pair packet that never came");
+
+        buffer.Stop();
+        buffer.Read(output).Should().Be(0);
+        buffer.SamplesLost.Should().Be(5);
+    }
+
+    [Fact]
+    public void A_gapless_stream_reports_no_loss_and_reads_across_packet_boundaries()
+    {
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 64);
+        buffer.Ingest(0, BuildPayload([(1f, 1f), (2f, 2f)]));
+        buffer.Ingest(1, BuildPayload([(3f, 3f), (4f, 4f)]));
+
+        buffer.Read(new float[64]).Should().Be(8);
+        buffer.SamplesLost.Should().Be(0);
+    }
+
     private static byte[] BuildPayload((float I, float Q)[] pairs)
     {
         var payload = new byte[pairs.Length * 8];
