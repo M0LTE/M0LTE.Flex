@@ -20,6 +20,16 @@ namespace M0LTE.Flex;
 /// sample before it and adds the hole's size to <see cref="SamplesLost"/> on the block after it.
 /// That is the <c>IIqSource</c> gap contract: a consumer can mark the gap instead of splicing
 /// across it.</para>
+/// <para><b>A stream that stops and restarts.</b> The counter wraps every 16 packets, so it
+/// cannot measure a silence longer than that, and a stream the radio restarts begins its count
+/// again wherever it likes: read naively, the new count is a hole of the wrong size, no hole at
+/// all, or a run of "late" packets that the reorder guard below would throw away unmarked. Built
+/// with a sample rate and a <see cref="TimeProvider"/>, the buffer also times the arrivals: after
+/// a silence longer than the counter's 16-packet cycle, a count that does not follow on is not
+/// trusted, the packet is kept, the count starts again from it, and the hole is the silence's
+/// length (its wall-clock time at the stream's rate, less the packet that ended it). A count that
+/// does follow on after a silence is taken at its word, since a reader held up while the packets
+/// waited in the socket looks exactly like that and has lost nothing.</para>
 /// </remarks>
 public sealed class DaxIqStreamBuffer
 {
@@ -29,8 +39,15 @@ public sealed class DaxIqStreamBuffer
     // still reported, early.
     private const int MaxPendingGaps = 64;
 
+    // The counter's cycle: after a silence this many packets long the 4-bit count says nothing.
+    private const int CounterCycle = 16;
+
     private readonly float[] _ring;
     private readonly object _lock = new();
+    private readonly TimeProvider? _timeProvider;
+    private readonly int _sampleRate;
+    private long _lastArrival;
+    private int _lastPairs;
     private readonly long[] _gapAt = new long[MaxPendingGaps];
     private readonly long[] _gapPairs = new long[MaxPendingGaps];
     private int _head;
@@ -56,6 +73,20 @@ public sealed class DaxIqStreamBuffer
         _ring = new float[capacityPairs * 2];
     }
 
+    /// <summary>Creates a buffer holding up to <paramref name="capacityPairs"/> complex samples
+    /// that also times packet arrivals on <paramref name="timeProvider"/>, so a stream that falls
+    /// silent for longer than the packet counter's 16-packet cycle, or that the radio restarts with
+    /// its counter starting over, is reported as a hole of the silence's length at
+    /// <paramref name="sampleRate"/>, rather than whatever the 4-bit counter happens to say.</summary>
+    public DaxIqStreamBuffer(int capacityPairs, int sampleRate, TimeProvider timeProvider)
+        : this(capacityPairs)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(sampleRate, 1);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _sampleRate = sampleRate;
+        _timeProvider = timeProvider;
+    }
+
     /// <summary>The running total of complex samples lost before the blocks <see cref="Read"/> has
     /// returned: ring overflow, plus an estimate for packets missing in flight (the missing packet
     /// count times the size of the packet that arrived after them). Changes only inside
@@ -69,7 +100,9 @@ public sealed class DaxIqStreamBuffer
     /// <summary>Complex samples dropped on ring overflow (a consumer not keeping up).</summary>
     public long SamplesDropped { get; private set; }
 
-    /// <summary>Packets the VITA 4-bit counter says went missing before arrival.</summary>
+    /// <summary>Packets that went missing before arrival: what the VITA 4-bit counter says, or,
+    /// for a silence longer than the counter's cycle (timed arrivals only), the silence's length in
+    /// packets of the size that ended it.</summary>
     public long PacketsLost { get; private set; }
 
     /// <summary>Ingests one DAX-IQ VITA payload (little-endian float32 <c>I, Q</c> pairs). The
@@ -77,6 +110,7 @@ public sealed class DaxIqStreamBuffer
     public void Ingest(int packetCount, ReadOnlySpan<byte> payload)
     {
         int pairs = payload.Length / 8;                    // 8 bytes = one complex (I,Q) float32 pair; a trailing <8 tail is ignored
+        long now = _timeProvider?.GetTimestamp() ?? 0;
         lock (_lock)
         {
             PacketsReceived++;
@@ -84,6 +118,17 @@ public sealed class DaxIqStreamBuffer
             {
                 int expected = (_lastPacketCount + 1) & 0xF;
                 int lostPackets = (packetCount - expected) & 0xF;
+
+                // After a silence the counter cannot span, a count that does not follow on is a
+                // restarted stream or a wrapped counter: the silence is the hole.
+                if (lostPackets != 0 && SilenceHole(now, pairs) is long silence and > 0)
+                {
+                    long silencePackets = (silence + Math.Max(pairs, 1) - 1) / Math.Max(pairs, 1);
+                    PacketsLost += silencePackets;
+                    RecordGap(_writtenPairs, silence);
+                    Accept(packetCount, pairs, now, payload);
+                    return;
+                }
 
                 // A count at or up to 7 behind the last one is a packet that arrived late
                 // (reordered in flight) or twice. Read as a jump forward it would be a phantom hole
@@ -109,20 +154,50 @@ public sealed class DaxIqStreamBuffer
                 }
             }
 
-            _lastPacketCount = packetCount & 0xF;
-
-            for (int i = 0; i < pairs; i++)
-            {
-                float iSample = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(i * 8, 4));
-                float qSample = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice((i * 8) + 4, 4));
-                PushPair(iSample, qSample);
-            }
-
-            if (pairs > 0)
-            {
-                System.Threading.Monitor.PulseAll(_lock);
-            }
+            Accept(packetCount, pairs, now, payload);
         }
+    }
+
+    // Takes a packet into the ring and makes it the one the next count and arrival are measured
+    // from. Called under the lock.
+    private void Accept(int packetCount, int pairs, long now, ReadOnlySpan<byte> payload)
+    {
+        _lastPacketCount = packetCount & 0xF;
+        _lastArrival = now;
+        _lastPairs = pairs;
+
+        for (int i = 0; i < pairs; i++)
+        {
+            float iSample = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice(i * 8, 4));
+            float qSample = BinaryPrimitives.ReadSingleLittleEndian(payload.Slice((i * 8) + 4, 4));
+            PushPair(iSample, qSample);
+        }
+
+        if (pairs > 0)
+        {
+            System.Threading.Monitor.PulseAll(_lock);
+        }
+    }
+
+    // The pairs a silence since the last accepted packet stands for, when it outlasted the
+    // counter's cycle; 0 when arrivals are not timed or the silence was shorter. The packet that
+    // ended the silence covers the end of it, so its own pairs are not counted. Called under the
+    // lock.
+    private long SilenceHole(long now, int pairs)
+    {
+        if (_timeProvider is null || _lastPairs <= 0)
+        {
+            return 0;
+        }
+
+        double seconds = _timeProvider.GetElapsedTime(_lastArrival, now).TotalSeconds;
+        double cycleSeconds = (double)CounterCycle * _lastPairs / _sampleRate;
+        if (seconds <= cycleSeconds)
+        {
+            return 0;
+        }
+
+        return Math.Max(0, (long)Math.Round(seconds * _sampleRate) - pairs);
     }
 
     /// <summary>Reads the next interleaved <c>I, Q</c> block, blocking until at least one pair is

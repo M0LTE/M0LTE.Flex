@@ -3,6 +3,7 @@ namespace M0LTE.Flex
     public sealed class DaxIqStreamBuffer
     {
         public DaxIqStreamBuffer(int capacityPairs) { }
+        public DaxIqStreamBuffer(int capacityPairs, int sampleRate, System.TimeProvider timeProvider) { }
         public long PacketsLost { get; }
         public long PacketsReceived { get; }
         public long SamplesDropped { get; }
