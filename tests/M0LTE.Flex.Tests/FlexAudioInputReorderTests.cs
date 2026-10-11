@@ -72,6 +72,90 @@ public sealed class FlexAudioInputReorderTests
         input.PacketsLost.Should().Be(1);
     }
 
+    [Fact]
+    public async Task A_rebuilt_slice_whose_count_lands_just_ahead_counts_one_loss_and_keeps_both_streams_in_order()
+    {
+        // Issue packet-net/pdn-soundmodem#680. Before, a new stream counting from 4 after the old
+        // one's 0 to 5 counted nothing lost (the hole went unmarked) and wrote over the old
+        // stream's held packets 4 and 5.
+        (MockFlexRadio mock, FlexStation station) = await SetUpAsync();
+        await using var _ = mock;
+        await using var __ = station;
+        using FlexAudioInput input = station.CreateAudioInput(packetBuffer: 3);
+
+        foreach (int count in new[] { 0, 1, 2, 3, 4, 5 })
+        {
+            station.Client.DeliverVitaPacket(Packet(station.RxStreamId, count, count + 1));
+        }
+
+        Rebuild(station, station.RxStreamId); // the radio may hand back the same stream id
+        foreach (int count in new[] { 4, 5, 6, 7, 8 })
+        {
+            station.Client.DeliverVitaPacket(Packet(station.RxStreamId, count, count + 7));
+        }
+
+        input.Flush();
+        float[] markers = DrainMarkers(input, expectedPackets: 11);
+
+        markers.Should().Equal(1, 2, 3, 4, 5, 6, 11, 12, 13, 14, 15);
+        input.PacketsLost.Should().Be(1, "the hole between the two streams, and nothing else");
+    }
+
+    [Fact]
+    public async Task A_rebuilt_slice_whose_count_lands_behind_conceals_no_phantom_packets()
+    {
+        // Before, the new stream's count 2 against a read point of 3 concealed 13 phantom packets.
+        (MockFlexRadio mock, FlexStation station) = await SetUpAsync();
+        await using var _ = mock;
+        await using var __ = station;
+        using FlexAudioInput input = station.CreateAudioInput(packetBuffer: 3);
+
+        foreach (int count in new[] { 0, 1, 2, 3, 4, 5 })
+        {
+            station.Client.DeliverVitaPacket(Packet(station.RxStreamId, count, count + 1));
+        }
+
+        uint newStream = station.RxStreamId + 1;
+        Rebuild(station, newStream);
+        foreach (int count in new[] { 2, 3, 4, 5 })
+        {
+            station.Client.DeliverVitaPacket(Packet(newStream, count, count + 20));
+        }
+
+        input.Flush();
+        float[] markers = DrainMarkers(input, expectedPackets: 10);
+
+        markers.Should().Equal(1, 2, 3, 4, 5, 6, 22, 23, 24, 25);
+        input.PacketsLost.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task The_first_stream_of_an_input_is_not_a_restart()
+    {
+        (MockFlexRadio mock, FlexStation station) = await SetUpAsync();
+        await using var _ = mock;
+        await using var __ = station;
+        Rebuild(station, station.RxStreamId); // a rebuild before any audio has arrived
+        using FlexAudioInput input = station.CreateAudioInput(packetBuffer: 3);
+
+        foreach (int count in new[] { 9, 10, 11, 12 })
+        {
+            station.Client.DeliverVitaPacket(Packet(station.RxStreamId, count, count));
+        }
+
+        input.Flush();
+        DrainMarkers(input, expectedPackets: 4).Should().Equal(9, 10, 11, 12);
+        input.PacketsLost.Should().Be(0);
+    }
+
+    // What FlexStation.RecoverAsync publishes once it has rebuilt the slice and its DAX streams.
+    private static void Rebuild(FlexStation station, uint rxStreamId)
+    {
+        FlexSliceBinding current = station.Lease.Current;
+        station.Lease.Invalidate();
+        station.Lease.Bind(current.SliceIndex, current.OwnerHandle, rxStreamId, current.TxStreamId);
+    }
+
     // Reads the drained samples and returns the marker level of each packet-sized chunk.
     private static float[] DrainMarkers(FlexAudioInput input, int expectedPackets)
     {
