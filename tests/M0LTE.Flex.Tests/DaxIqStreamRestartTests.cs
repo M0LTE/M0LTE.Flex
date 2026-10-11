@@ -14,26 +14,28 @@ public sealed class DaxIqStreamRestartTests
     private static readonly TimeSpan PacketTime = TimeSpan.FromMilliseconds(10);
 
     [Fact]
-    public void A_restart_whose_count_lands_behind_the_last_one_keeps_its_packets_and_reports_the_silence()
+    public void A_restart_whose_count_lands_behind_the_last_one_is_found_on_its_second_packet_and_reports_the_silence()
     {
         // Untimed, counts 0..3 then a restart at 0 would see 0, 1, 2, 3 as late or repeated
-        // packets: all four dropped, no hole, and the silence before them never reported.
+        // packets: all four dropped, no hole, and the silence before them never reported. Now the
+        // first, which could be a late repeat, is dropped; the second follows on from it, so the
+        // stream restarted, and the rest are kept.
         var clock = new ManualClock();
         var buffer = new DaxIqStreamBuffer(capacityPairs: 4096, Rate, clock);
         Deliver(buffer, clock, counts: [0, 1, 2, 3], level: 1f);
 
         clock.Advance(TimeSpan.FromSeconds(1));
         buffer.Ingest(0, Payload(2f));
-        Deliver(buffer, clock, counts: [1, 2, 3, 4], level: 2f);
+        Deliver(buffer, clock, counts: [1, 2, 3, 4], level: 3f);
 
         float[] output = new float[4096];
         buffer.Read(output).Should().Be(4 * PacketPairs * 2, "the four packets before the restart");
         buffer.SamplesLost.Should().Be(0);
 
-        buffer.Read(output).Should().Be(5 * PacketPairs * 2, "every packet of the restarted stream is kept");
-        output[0].Should().Be(2f);
-        buffer.SamplesLost.Should().Be(1000 - PacketPairs, "one second of silence, less the packet that ended it");
-        buffer.PacketsLost.Should().Be(99);
+        buffer.Read(output).Should().Be(4 * PacketPairs * 2, "the restarted stream from its second packet");
+        output[0].Should().Be(3f);
+        buffer.SamplesLost.Should().Be(1010 - PacketPairs, "the silence up to the second packet, less that packet");
+        buffer.PacketsLost.Should().Be(100);
     }
 
     [Fact]
@@ -47,10 +49,11 @@ public sealed class DaxIqStreamRestartTests
 
         clock.Advance(TimeSpan.FromSeconds(2));
         buffer.Ingest(0, Payload(2f));
+        Deliver(buffer, clock, counts: [1], level: 2f); // the stream resumes at its own pace
 
         float[] output = new float[4096];
         buffer.Read(output).Should().Be(3 * PacketPairs * 2);
-        buffer.Read(output).Should().Be(PacketPairs * 2);
+        buffer.Read(output).Should().Be(2 * PacketPairs * 2);
         buffer.SamplesLost.Should().Be(2000 - PacketPairs);
     }
 
@@ -64,6 +67,7 @@ public sealed class DaxIqStreamRestartTests
 
         clock.Advance(PacketTime * 21);
         buffer.Ingest((2 + 20) & 0xF, Payload(2f));
+        Deliver(buffer, clock, counts: [(3 + 20) & 0xF], level: 2f);
 
         float[] output = new float[4096];
         buffer.Read(output);
@@ -86,6 +90,68 @@ public sealed class DaxIqStreamRestartTests
 
         float[] output = new float[4096];
         buffer.Read(output).Should().Be(5 * PacketPairs * 2);
+        buffer.SamplesLost.Should().Be(0);
+        buffer.PacketsLost.Should().Be(0);
+    }
+
+    [Fact]
+    public void A_stall_of_ours_with_one_real_loss_in_it_reports_the_one_packet_not_the_stall()
+    {
+        // The receive thread is held up 300 ms; the socket's backlog then comes out back to back,
+        // with one packet the radio sent missing from it. Believing the clock would report 300
+        // lost samples for 10.
+        var clock = new ManualClock();
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4096, Rate, clock);
+        Deliver(buffer, clock, counts: [0, 1, 2], level: 1f);
+
+        clock.Advance(TimeSpan.FromMilliseconds(300));
+        buffer.Ingest(4, Payload(2f)); // 3 never arrived
+        buffer.Ingest(5, Payload(2f)); // the backlog, no time between
+        buffer.Ingest(6, Payload(2f));
+
+        float[] output = new float[4096];
+        buffer.Read(output).Should().Be(3 * PacketPairs * 2);
+        buffer.Read(output).Should().Be(3 * PacketPairs * 2);
+        buffer.SamplesLost.Should().Be(PacketPairs);
+        buffer.PacketsLost.Should().Be(1);
+    }
+
+    [Fact]
+    public void The_samples_after_an_undecided_hole_wait_for_the_packet_that_decides_it()
+    {
+        var clock = new ManualClock();
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4096, Rate, clock);
+        Deliver(buffer, clock, counts: [0, 1], level: 1f);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        buffer.Ingest(9, Payload(2f));
+
+        float[] output = new float[4096];
+        buffer.Read(output).Should().Be(2 * PacketPairs * 2, "the samples before the hole are not held");
+
+        // With no packet coming, stopping takes the counter's word and lets the rest out.
+        buffer.Stop();
+        buffer.Read(output).Should().Be(PacketPairs * 2);
+        buffer.SamplesLost.Should().Be(7 * PacketPairs);
+        buffer.PacketsLost.Should().Be(7);
+    }
+
+    [Theory]
+    [InlineData(2)] // a repeat of the last count
+    [InlineData(1)] // one inside the behind window
+    public void A_late_packet_that_is_the_first_out_after_a_stall_is_still_dropped(int lateCount)
+    {
+        var clock = new ManualClock();
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4096, Rate, clock);
+        Deliver(buffer, clock, counts: [0, 1, 2], level: 1f);
+
+        clock.Advance(TimeSpan.FromMilliseconds(300));
+        buffer.Ingest(lateCount, Payload(9f));
+        buffer.Ingest(3, Payload(2f));
+        buffer.Ingest(4, Payload(2f));
+
+        float[] output = new float[4096];
+        buffer.Read(output).Should().Be(5 * PacketPairs * 2, "in order, the late packet not among them");
+        output[3 * PacketPairs * 2].Should().Be(2f);
         buffer.SamplesLost.Should().Be(0);
         buffer.PacketsLost.Should().Be(0);
     }

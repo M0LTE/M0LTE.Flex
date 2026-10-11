@@ -74,7 +74,8 @@ public sealed class FlexDaxIqSource : IIqSource, IAsyncDisposable
     /// estimated from the VITA packet counter at one packet's worth of samples each, and a silence
     /// longer than the counter's 16-packet cycle that ends on a count that does not follow on (the
     /// radio restarted the stream, or the counter wrapped) is the silence's wall-clock length at
-    /// the stream's rate. See <see cref="DaxIqStreamBuffer.SamplesLost"/>.</remarks>
+    /// the stream's rate, unless the packets after it come in a burst (our receive thread was
+    /// held up, not the radio), when the counter is believed. See <see cref="DaxIqStreamBuffer.SamplesLost"/>.</remarks>
     public long SamplesLost => _buffer.SamplesLost;
 
     /// <summary>The DAX-IQ VITA stream id the radio tags our packets with.</summary>
