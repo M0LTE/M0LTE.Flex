@@ -14,12 +14,11 @@ public sealed class DaxIqStreamRestartTests
     private static readonly TimeSpan PacketTime = TimeSpan.FromMilliseconds(10);
 
     [Fact]
-    public void A_restart_whose_count_lands_behind_the_last_one_is_found_on_its_second_packet_and_reports_the_silence()
+    public void A_restart_whose_count_lands_behind_the_last_one_keeps_its_packets_and_reports_the_silence()
     {
         // Untimed, counts 0..3 then a restart at 0 would see 0, 1, 2, 3 as late or repeated
-        // packets: all four dropped, no hole, and the silence before them never reported. Now the
-        // first, which could be a late repeat, is dropped; the second follows on from it, so the
-        // stream restarted, and the rest are kept.
+        // packets: all four dropped, no hole, and the silence before them never reported. The
+        // stream resumes at its own pace, so it is a restart, not a stall of ours.
         var clock = new ManualClock();
         var buffer = new DaxIqStreamBuffer(capacityPairs: 4096, Rate, clock);
         Deliver(buffer, clock, counts: [0, 1, 2, 3], level: 1f);
@@ -32,10 +31,33 @@ public sealed class DaxIqStreamRestartTests
         buffer.Read(output).Should().Be(4 * PacketPairs * 2, "the four packets before the restart");
         buffer.SamplesLost.Should().Be(0);
 
-        buffer.Read(output).Should().Be(4 * PacketPairs * 2, "the restarted stream from its second packet");
-        output[0].Should().Be(3f);
-        buffer.SamplesLost.Should().Be(1010 - PacketPairs, "the silence up to the second packet, less that packet");
-        buffer.PacketsLost.Should().Be(100);
+        buffer.Read(output).Should().Be(5 * PacketPairs * 2, "every packet of the restarted stream is kept");
+        output[0].Should().Be(2f);
+        output[PacketPairs * 2].Should().Be(3f);
+        buffer.SamplesLost.Should().Be(1000 - PacketPairs, "one second of silence, less the packet that ended it");
+        buffer.PacketsLost.Should().Be(99);
+    }
+
+    [Fact]
+    public void A_restart_on_the_same_count_as_the_last_packet_keeps_it_and_reports_the_silence()
+    {
+        // 1 in 16 restarts: the new stream's first count repeats the old stream's last. After a
+        // silence of the radio's (the stream resumes at its own pace) it is a restart; the same
+        // count out of a burst after a stall of ours is a repeat (the late-packet test below).
+        var clock = new ManualClock();
+        var buffer = new DaxIqStreamBuffer(capacityPairs: 4096, Rate, clock);
+        Deliver(buffer, clock, counts: [0, 1, 2, 3], level: 1f);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        buffer.Ingest(3, Payload(2f));
+        Deliver(buffer, clock, counts: [4, 5], level: 3f);
+
+        float[] output = new float[4096];
+        buffer.Read(output).Should().Be(4 * PacketPairs * 2);
+        buffer.Read(output).Should().Be(3 * PacketPairs * 2, "the restarted stream's first packet is kept");
+        output[0].Should().Be(2f);
+        buffer.SamplesLost.Should().Be(1000 - PacketPairs);
+        buffer.PacketsLost.Should().Be(99);
     }
 
     [Fact]

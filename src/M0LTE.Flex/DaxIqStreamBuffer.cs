@@ -36,10 +36,11 @@ namespace M0LTE.Flex;
 /// small real loss into the length of the stall; otherwise the hole is the silence's wall-clock
 /// length at the stream's rate, less the packet that ended it. A silence that ends on a count that
 /// does follow on is taken at the counter's word: that is exactly what a stall of ours that lost
-/// nothing looks like. The late and duplicate guard holds across a silence too, so a late repeat
-/// that happens to be the first packet out of the socket after a stall is still dropped; only a
-/// second count that follows on from the dropped one is taken as a restarted stream landing
-/// behind the old count.</para>
+/// nothing looks like. A count behind the last one (a repeat of it included) after a silence is
+/// decided the same way: in a burst it is a late or repeated packet out of the socket after a stall
+/// of ours, and is taken back out of the ring with no hole; at the stream's own pace it is a
+/// restarted stream that landed behind the old count, and is kept with the silence as its
+/// hole.</para>
 /// </remarks>
 public sealed class DaxIqStreamBuffer
 {
@@ -69,9 +70,13 @@ public sealed class DaxIqStreamBuffer
     private long _pendingArrival;
     private int _pendingPacketPairs;
 
-    // The count of a behind packet dropped right after a silence, or -1: the next count following
-    // on from it means the stream restarted behind the old count.
-    private int _behindAfterSilence = -1;
+    // Set when the undecided packet is one behind the last count: in a burst it is a late or
+    // repeated packet and comes back out of the ring, and the count and arrival before it return.
+    private bool _pendingBehind;
+    private int _pendingPushedPairs;
+    private int _priorPacketCount;
+    private long _priorArrival;
+    private int _priorPairs;
     private readonly long[] _gapAt = new long[MaxPendingGaps];
     private readonly long[] _gapPairs = new long[MaxPendingGaps];
     private int _head;
@@ -151,19 +156,18 @@ public sealed class DaxIqStreamBuffer
                 int lostPackets = (packetCount - expected) & 0xF;
                 long silence = lostPackets != 0 ? SilenceHole(now, pairs) : 0;
 
-                if (lostPackets >= 8 && silence > 0)
+                if (lostPackets >= 8 && silence > 0 && 2 * pairs <= _ring.Length)
                 {
-                    // Behind the last count after a silence. The guard below still holds: a late
-                    // repeat can be the first packet out of the socket after a stall. Only a second
-                    // count following on from the dropped one is a restarted stream.
-                    int previous = _behindAfterSilence;
-                    _behindAfterSilence = packetCount & 0xF;
-                    if (previous < 0 || (packetCount & 0xF) != ((previous + 1) & 0xF))
-                    {
-                        return;
-                    }
-
-                    OpenPending(1, pairs, silence, now);
+                    // Behind the last count after a silence: a late or repeated packet out of the
+                    // socket after a stall of ours, or a stream the radio restarted behind the old
+                    // count. Kept for now, behind the undecided hole, and taken back out if the
+                    // next packet shows a burst.
+                    _priorPacketCount = _lastPacketCount;
+                    _priorArrival = _lastArrival;
+                    _priorPairs = _lastPairs;
+                    OpenPending(0, pairs, silence, now);
+                    _pendingBehind = true;
+                    _pendingPushedPairs = pairs;
                     Accept(packetCount, pairs, now, payload);
                     return;
                 }
@@ -212,7 +216,6 @@ public sealed class DaxIqStreamBuffer
         _lastPacketCount = packetCount & 0xF;
         _lastArrival = now;
         _lastPairs = pairs;
-        _behindAfterSilence = -1;
 
         for (int i = 0; i < pairs; i++)
         {
@@ -233,6 +236,7 @@ public sealed class DaxIqStreamBuffer
     private void OpenPending(long counterPackets, int pairs, long silencePairs, long now)
     {
         _pending = true;
+        _pendingBehind = false;
         _pendingAt = _writtenPairs;
         _pendingCounterPackets = counterPackets;
         _pendingCounterPairs = counterPackets * Math.Max(pairs, 1);
@@ -254,6 +258,18 @@ public sealed class DaxIqStreamBuffer
     private void ResolvePending(bool burst)
     {
         _pending = false;
+        if (_pendingBehind && burst)
+        {
+            // A late or repeated packet after a stall of ours: no hole, and it never happened.
+            // Read has not passed the hole, so the packet is still the newest thing in the ring.
+            Retract(_pendingPushedPairs);
+            _lastPacketCount = _priorPacketCount;
+            _lastArrival = _priorArrival;
+            _lastPairs = _priorPairs;
+            System.Threading.Monitor.PulseAll(_lock);
+            return;
+        }
+
         long pairs = burst ? _pendingCounterPairs : _pendingTimePairs;
         PacketsLost += burst
             ? _pendingCounterPackets
@@ -404,6 +420,20 @@ public sealed class DaxIqStreamBuffer
 
         _count += 2;
         _writtenPairs++;
+    }
+
+    // Takes the newest `pairs` pairs back out of the ring. Called under the lock.
+    private void Retract(int pairs)
+    {
+        int floats = Math.Min(pairs * 2, _count);
+        _head -= floats;
+        if (_head < 0)
+        {
+            _head += _ring.Length;
+        }
+
+        _count -= floats;
+        _writtenPairs -= floats / 2;
     }
 
     // Remembers a hole of `pairs` complex samples just before stream position `at`. Called under
