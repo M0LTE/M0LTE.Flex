@@ -9,8 +9,17 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
+  <!-- Build against a local M0LTE.Radio.Audio checkout with
+       `-p:RadioAudioSourcePath=/path/to/M0LTE.Radio.Audio/src/M0LTE.Radio.Audio/M0LTE.Radio.Audio.csproj`,
+       while the two are developed together. A consumer that sets the same property on its own
+       build (pdn-soundmodem does) passes it down here too, so both sides see one copy. Unset,
+       this uses the package pinned in Directory.Packages.props. -->
   <ItemGroup>
-    <PackageReference Include="M0LTE.Radio.Audio" />
+    <PackageReference Include="M0LTE.Radio.Audio" Condition="'$(RadioAudioSourcePath)' == ''" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RadioAudioSourcePath)' != ''">
+    <ProjectReference Include="$(RadioAudioSourcePath)" />
   </ItemGroup>
 
   <ItemGroup>

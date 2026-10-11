@@ -6,6 +6,7 @@ namespace M0LTE.Flex
         public long PacketsLost { get; }
         public long PacketsReceived { get; }
         public long SamplesDropped { get; }
+        public long SamplesLost { get; }
         public void Ingest(int packetCount, System.ReadOnlySpan<byte> payload) { }
         public int Read(System.Span<float> destination) { }
         public void Stop() { }
@@ -103,13 +104,15 @@ namespace M0LTE.Flex
         public int RateKsps { get; init; }
         public double RingSeconds { get; init; }
     }
-    public sealed class FlexDaxIqSource : M0LTE.Flex.IIqSource, System.IAsyncDisposable
+    public sealed class FlexDaxIqSource : M0LTE.Radio.Audio.IIqSource, System.IAsyncDisposable
     {
         public double CentreFrequencyHz { get; }
         public long PacketsLost { get; }
         public long PacketsReceived { get; }
         public int SampleRate { get; }
+        public long SamplesLost { get; }
         public uint StreamId { get; }
+        public long TuningGeneration { get; }
         public System.Threading.Tasks.ValueTask DisposeAsync() { }
         public int Read(System.Span<float> interleaved) { }
         public static System.Threading.Tasks.Task<M0LTE.Flex.FlexDaxIqSource> OpenAsync(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexDaxIqOptions options, bool ownsClient = false, System.Threading.CancellationToken cancellation = default) { }
@@ -429,12 +432,6 @@ namespace M0LTE.Flex
         public int TxFilterHighHz { get; init; }
         public int TxFilterLowHz { get; init; }
         public string UnderlyingMode { get; init; }
-    }
-    public interface IIqSource
-    {
-        double CentreFrequencyHz { get; }
-        int SampleRate { get; }
-        int Read(System.Span<float> interleaved);
     }
     public sealed class IqBand : System.IEquatable<M0LTE.Flex.IqBand>
     {

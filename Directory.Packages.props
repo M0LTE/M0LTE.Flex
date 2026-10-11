@@ -12,7 +12,7 @@
     <PackageVersion Include="AwesomeAssertions" Version="9.2.0" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
 
-    <PackageVersion Include="M0LTE.Radio.Audio" Version="0.1.0" />
+    <PackageVersion Include="M0LTE.Radio.Audio" Version="0.1.1" />
 
     <!-- Public-API lock: renders the assembly's public surface to text for the
          approval test in PublicApiTests.cs. -->
