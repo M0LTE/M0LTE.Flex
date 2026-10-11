@@ -90,7 +90,7 @@ int got = iq.Read(block);          // got floats = got / 2 complex samples
 Console.WriteLine($"{iq.PacketsReceived} packets, {iq.PacketsLost} lost");
 ```
 
-`FlexDaxIqSource` implements `M0LTE.Radio.Audio.IIqSource` (`SampleRate`, `CentreFrequencyHz`, `TuningGeneration`, `SamplesLost`, `Read`), so a digital-downconverter front end can fan it into several narrowband channels, and the same front end takes any other IQ source that implements it. A block never spans a hole in the stream: `SamplesLost` goes up on the block after one, exactly for a ring overflow and estimated at one packet's worth per missing VITA packet. `TuningGeneration` stays 0, since the source owns its panadapter at a fixed frequency and rate.
+`FlexDaxIqSource` implements `M0LTE.Radio.Audio.IIqSource` (`SampleRate`, `CentreFrequencyHz`, `TuningGeneration`, `SamplesLost`, `Read`), so a digital-downconverter front end can fan it into several narrowband channels, and the same front end takes any other IQ source that implements it. A block never spans a hole in the stream: `SamplesLost` goes up on the block after one, exactly for a ring overflow and estimated at one packet's worth per missing VITA packet. A silence longer than the packet counter's 16-packet cycle that ends on a count that does not follow on (the radio restarted the stream, or the counter wrapped) is measured by its wall-clock length instead, unless the packets after it arrive in a burst, which means our receive thread was held up rather than the radio, and then the counter is believed. `TuningGeneration` stays 0, since the source owns its panadapter at a fixed frequency and rate.
 
 `IIqSource` lived in this package until 0.15.0. Code that named `M0LTE.Flex.IIqSource` now uses `M0LTE.Radio.Audio`.
 

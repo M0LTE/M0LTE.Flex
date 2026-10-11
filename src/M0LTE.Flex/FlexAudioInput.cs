@@ -36,12 +36,13 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
     private int _headOffset;
     private int _available;
     private int _readPoint = -1;
+    private int _generation;
     private bool _closed;
 
     /// <summary>Number of DAX packets received (diagnostics).</summary>
     private long _received;
 
-    /// <summary>Number of concealed lost packets (diagnostics).</summary>
+    /// <summary>Number of concealed lost packets, plus one per restarted stream.</summary>
     private long _lost;
 
     /// <summary>Subscribes to <paramref name="client"/>'s DAX packets for
@@ -90,7 +91,10 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
     /// <summary>Total DAX packets received.</summary>
     public long PacketsReceived => Interlocked.Read(ref _received);
 
-    /// <summary>Total packets concealed as lost.</summary>
+    /// <summary>Total packets lost: each one concealed by repeating the last payload, plus one for
+    /// each time the stream restarted under this input (the station rebuilt its slice, so a new
+    /// DAX stream with its own packet count took over), whose hole has no packet count to measure
+    /// it by. A consumer that marks a gap when this moves marks one at a rebuild.</summary>
     public long PacketsLost => Interlocked.Read(ref _lost);
 
     /// <inheritdoc />
@@ -136,7 +140,8 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
 
     private void OnVitaPacket(VitaPacket packet)
     {
-        if (packet.StreamId != _lease.Current.RxStreamId
+        FlexSliceBinding binding = _lease.Current;
+        if (packet.StreamId != binding.RxStreamId
             || packet.PacketClassCode != _format.PacketClassCode)
         {
             return;
@@ -150,6 +155,24 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
         int count = packet.PacketCount & (SlotCount - 1);
         lock (_lock)
         {
+            // A rebuilt slice's stream counts from wherever it likes, so its first count says
+            // nothing about the old one's last: read across the two, the ring would conceal 0 to
+            // 13 phantom packets (none at all when the new count lands just ahead of the read
+            // point), and the hole between the streams would go unmarked. The old stream's held
+            // packets go out in order, the hole counts as one loss, and the new stream starts the
+            // ring afresh.
+            if (binding.Generation != _generation)
+            {
+                if (_readPoint >= 0)
+                {
+                    FlushHeld();
+                    _readPoint = -1;
+                    _lost++;
+                }
+
+                _generation = binding.Generation;
+            }
+
             _slots[count] = samples;
             if (_readPoint == -1)
             {
@@ -192,17 +215,24 @@ public sealed class FlexAudioInput : IAudioInput, IDisposable
                 return;
             }
 
-            for (int k = 0; k < SlotCount; k++)
-            {
-                int index = (_readPoint + k) % SlotCount;
-                if (_slots[index] is float[] slot)
-                {
-                    Emit(slot);
-                    _slots[index] = null;
-                }
-            }
-
+            FlushHeld();
             Monitor.PulseAll(_lock);
+        }
+    }
+
+    // Emits every packet still held in the ring, in count order from the read point. Caller
+    // holds _lock and has checked there is a read point.
+    private void FlushHeld()
+    {
+        for (int k = 0; k < SlotCount; k++)
+        {
+            int index = (_readPoint + k) % SlotCount;
+            if (_slots[index] is float[] slot)
+            {
+                Emit(slot);
+                _lastPayload = slot;
+                _slots[index] = null;
+            }
         }
     }
 

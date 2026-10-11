@@ -71,8 +71,11 @@ public sealed class FlexDaxIqSource : IIqSource, IAsyncDisposable
 
     /// <inheritdoc />
     /// <remarks>Ring overflow (the reader fell behind) is exact; packets lost in flight are
-    /// estimated from the VITA packet counter at one packet's worth of samples each. See
-    /// <see cref="DaxIqStreamBuffer.SamplesLost"/>.</remarks>
+    /// estimated from the VITA packet counter at one packet's worth of samples each, and a silence
+    /// longer than the counter's 16-packet cycle that ends on a count that does not follow on (the
+    /// radio restarted the stream, or the counter wrapped) is the silence's wall-clock length at
+    /// the stream's rate, unless the packets after it come in a burst (our receive thread was
+    /// held up, not the radio), when the counter is believed. See <see cref="DaxIqStreamBuffer.SamplesLost"/>.</remarks>
     public long SamplesLost => _buffer.SamplesLost;
 
     /// <summary>The DAX-IQ VITA stream id the radio tags our packets with.</summary>
@@ -128,7 +131,7 @@ public sealed class FlexDaxIqSource : IIqSource, IAsyncDisposable
         int sampleRate = options.RateKsps * 1000;
         double centreHz = double.Parse(options.FrequencyMHz, CultureInfo.InvariantCulture) * 1e6;
         int capacityPairs = Math.Max(sampleRate / 4, (int)(sampleRate * options.RingSeconds));
-        return new FlexDaxIqSource(client, ownsClient, streamId, panId, sampleRate, centreHz, new DaxIqStreamBuffer(capacityPairs));
+        return new FlexDaxIqSource(client, ownsClient, streamId, panId, sampleRate, centreHz, new DaxIqStreamBuffer(capacityPairs, sampleRate, TimeProvider.System));
     }
 
     /// <inheritdoc />
