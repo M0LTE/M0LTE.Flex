@@ -224,6 +224,17 @@ Both settings persist after teardown and affect what the radio transmits from th
   the command or took it and did nothing. `MockFlexRadio.MaxSliceFilterHighHz` models a radio that
   will not go that wide; `MockFlexRadio.DiscardSliceFilterWrites` one that accepts and ignores.
 
+**Transmit lead (0.16.0).** `FlexAudioOutput` keeps its audio 80 ms ahead of the radio's playout,
+so a sending thread held up for less than that (a late wake-up, a garbage collection) costs nothing
+on the air. Paced one 5 ms packet at a time, as up to 0.15.1, such a hold left the radio with
+nothing to send: a hole of band noise mid-burst, then the rest of the burst late by the hole.
+`Drain` still returns only once the radio has played everything, following it late across any
+longer stall, so the unkey does not cut the end off. Set `M0LTE_FLEX_TX_LEAD_MS` to whole
+milliseconds (0 to 500) to change the lead, or to `0` or `off` for the old one-packet pacing; it is
+read when the sink is created, and `TransmitLead` says which is in force. FlexRadio does not
+document how much early DAX audio the radio buffers; the class remarks say what is known and what
+is assumed.
+
 ## Testing without a radio
 
 ```csharp

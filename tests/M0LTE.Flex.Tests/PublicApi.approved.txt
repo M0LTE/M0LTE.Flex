@@ -52,10 +52,13 @@ namespace M0LTE.Flex
     }
     public sealed class FlexAudioOutput : M0LTE.Radio.Audio.IAudioOutput
     {
+        public const string TransmitLeadVariable = "M0LTE_FLEX_TX_LEAD_MS";
+        public static readonly System.TimeSpan DefaultTransmitLead;
         public FlexAudioOutput(M0LTE.Flex.FlexClient client, M0LTE.Flex.FlexSliceLease lease, M0LTE.Flex.DaxStreamFormat format, bool paceRealTime = true) { }
         public FlexAudioOutput(M0LTE.Flex.FlexClient client, uint streamId, M0LTE.Flex.DaxStreamFormat format, bool paceRealTime = true) { }
         public long PacketsSent { get; }
         public int SampleRate { get; }
+        public System.TimeSpan TransmitLead { get; }
         public void Drain() { }
         public void Write(System.ReadOnlySpan<float> samples) { }
     }
